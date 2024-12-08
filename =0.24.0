@@ -1,0 +1,7 @@
+Requirement already satisfied: httpx in /Users/bytedance/Library/Caches/pypoetry/virtualenvs/translation-agent-bx3QakYx-py3.11/lib/python3.11/site-packages (0.28.1)
+Requirement already satisfied: anyio in /Users/bytedance/Library/Caches/pypoetry/virtualenvs/translation-agent-bx3QakYx-py3.11/lib/python3.11/site-packages (from httpx) (4.4.0)
+Requirement already satisfied: certifi in /Users/bytedance/Library/Caches/pypoetry/virtualenvs/translation-agent-bx3QakYx-py3.11/lib/python3.11/site-packages (from httpx) (2024.6.2)
+Requirement already satisfied: httpcore==1.* in /Users/bytedance/Library/Caches/pypoetry/virtualenvs/translation-agent-bx3QakYx-py3.11/lib/python3.11/site-packages (from httpx) (1.0.7)
+Requirement already satisfied: idna in /Users/bytedance/Library/Caches/pypoetry/virtualenvs/translation-agent-bx3QakYx-py3.11/lib/python3.11/site-packages (from httpx) (2.10)
+Requirement already satisfied: h11<0.15,>=0.13 in /Users/bytedance/Library/Caches/pypoetry/virtualenvs/translation-agent-bx3QakYx-py3.11/lib/python3.11/site-packages (from httpcore==1.*->httpx) (0.14.0)
+Requirement already satisfied: sniffio>=1.1 in /Users/bytedance/Library/Caches/pypoetry/virtualenvs/translation-agent-bx3QakYx-py3.11/lib/python3.11/site-packages (from anyio->httpx) (1.3.1)
