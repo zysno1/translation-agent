@@ -32,7 +32,7 @@ class PDFTranslatorAgent:
                 gr.Checkbox(label="保持原格式", value=True),
                 gr.Checkbox(label="按段落分割", value=True)
             ],
-            outputs=gr.HTML(label="翻译结果"),
+            outputs=gr.Textbox(label="翻译结果", lines=10),
             title="PDF翻译助手",
             description="上传英文PDF文件，获取中英文对照翻译结果",
             allow_flagging="never"
