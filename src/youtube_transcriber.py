@@ -55,6 +55,12 @@ class YouTubeTranscriber:
 3. 保留原文的专业术语
 4. 确保翻译后的文本通顺易读"""
 
+    # Token 价格（元/1K tokens）
+    PRICE_PER_1K_TOKENS = {
+        'qwen-plus': 0.1,  # 通义千问-Plus 模型价格
+        'sensevoice-v1': 0.0015  # 语音识别价格（元/秒）
+    }
+
     def __init__(self):
         """初始化转录器"""
         # 从环境变量获取API密钥
@@ -77,6 +83,15 @@ class YouTubeTranscriber:
         # 初始化OSS客户端
         self.auth = oss2.Auth(self.oss_access_key, self.oss_access_secret)
         self.bucket = oss2.Bucket(self.auth, self.oss_endpoint, self.oss_bucket)
+        
+        # 初始化 Token 统计
+        self.total_tokens = {
+            'qwen-plus': 0,  # 通义千问-Plus 模型使用的 tokens
+            'sensevoice-v1': 0  # 语音识别使用的时长（秒）
+        }
+        
+        # 当前处理的音频文件路径
+        self.current_audio_file = None
 
     def get_headers(self, request_id: str = None) -> dict:
         """生成请求头
@@ -382,6 +397,7 @@ class YouTubeTranscriber:
                 import shutil
                 shutil.copy2(processed_file, processed_output)
                 print(f"✓ 处理后音频: {processed_output}")
+                self.current_audio_file = processed_file  # 更新当前处理的音频文件路径
             
             # 3. 上传到OSS
             print("\n[3/7] 上传音频")
@@ -427,6 +443,28 @@ class YouTubeTranscriber:
             print(f"5. 优化结果: {polished_output}")
             print(f"6. 最终结果: {final_output}")
             
+            # 打印 Token 使用统计
+            print("\n=== Token 使用统计 ===")
+            total_cost = 0
+            
+            # 通义千问-Plus 模型费用
+            qwen_tokens = self.total_tokens['qwen-plus']
+            qwen_cost = (qwen_tokens / 1000) * self.PRICE_PER_1K_TOKENS['qwen-plus']
+            print(f"通义千问-Plus:")
+            print(f"  • 使用量: {qwen_tokens:,} tokens")
+            print(f"  • 费用: ¥{qwen_cost:.4f}")
+            total_cost += qwen_cost
+            
+            # 语音识别费用
+            audio_duration = self.total_tokens['sensevoice-v1']
+            audio_cost = audio_duration * self.PRICE_PER_1K_TOKENS['sensevoice-v1']
+            print(f"语音识别:")
+            print(f"  • 使用量: {audio_duration:.1f} 秒")
+            print(f"  • 费用: ¥{audio_cost:.4f}")
+            total_cost += audio_cost
+            
+            print(f"\n总费用: ¥{total_cost:.4f}")
+            
         except Exception as e:
             print(f"\n❌ 处理失败: {str(e)}")
             raise
@@ -434,11 +472,52 @@ class YouTubeTranscriber:
         finally:
             pass
     
+    def api_call_with_retry(self, func, *args, max_retries=3, **kwargs):
+        """执行API调用，失败时自动重试
+        Args:
+            func: 要调用的函数
+            max_retries: 最大重试次数
+            *args, **kwargs: 传递给函数的参数
+        Returns:
+            API调用结果
+        Raises:
+            Exception: 所有重试都失败时抛出异常
+        """
+        last_error = None
+        
+        # 如果是 requests 的调用，增加超时时间
+        if func == requests.get:
+            kwargs['timeout'] = 30  # 设置30秒超时
+        
+        # 如果是 dashscope 的调用，增加超时时间
+        if 'dashscope' in str(func):
+            kwargs['timeout'] = 60  # 设置60秒超时
+        
+        for attempt in range(max_retries):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:  # 如果还有重试机会
+                    # 使用指数退避策略：2^attempt * 5秒（5s, 10s, 20s）
+                    wait_time = (2 ** attempt) * 5
+                    print(f"❌ 第 {attempt + 1} 次调用失败: {str(e)}")
+                    print(f"→ {wait_time} 秒后重试...")
+                    # 添加随机抖动，避免多个请求同时重试
+                    jitter = random.uniform(0, 2)
+                    time.sleep(wait_time + jitter)
+                else:
+                    print(f"❌ 最后一次调用失败: {str(e)}")
+                    raise last_error
+
     def recognize_speech(self, file_url: str) -> str:
         """使用通义千问 SenseVoice API 进行语音识别"""
         try:
             print("→ 提交转写任务...")
-            task_response = Transcription.async_call(
+            
+            # 使用重试机制提交任务
+            task_response = self.api_call_with_retry(
+                Transcription.async_call,
                 model='sensevoice-v1',
                 file_urls=[file_url],
                 language_hints=['zh']
@@ -451,17 +530,35 @@ class YouTubeTranscriber:
             print(f"✓ 任务已提交 (ID: {task_id})")
             
             print("→ 等待转写结果...")
-            transcribe_response = Transcription.wait(task=task_id)
+            # 使用重试机制获取结果
+            transcribe_response = self.api_call_with_retry(
+                Transcription.wait,
+                task=task_id
+            )
             
             if transcribe_response.status_code == HTTPStatus.OK:
                 transcription_url = transcribe_response.output['results'][0]['transcription_url']
                 print("→ 下载转写结果...")
                 
-                text_response = requests.get(transcription_url)
+                # 使用重试机制下载结果
+                text_response = self.api_call_with_retry(requests.get, transcription_url)
+                
                 if text_response.status_code == 200:
                     text_result = text_response.json()
                     text = text_result['transcripts'][0]['text']
-                    print("✓ 转写完成")
+                    
+                    # 更新语音识别使用时长（从毫秒转换为秒）
+                    duration = float(text_result['duration']) / 1000.0 if 'duration' in text_result else 0
+                    if duration == 0:
+                        # 如果 duration 字段不存在或为0，尝试从音频文件获取时长
+                        try:
+                            audio = AudioSegment.from_wav(self.current_audio_file)
+                            duration = len(audio) / 1000.0  # 转换为秒
+                        except:
+                            print("⚠️ 无法获取音频时长，将影响费用统计")
+                    
+                    self.total_tokens['sensevoice-v1'] = duration
+                    print(f"✓ 转写完成 ({duration:.1f} 秒)")
                     return text
                 else:
                     raise Exception(f"下载失败: {text_response.text}")
@@ -505,39 +602,272 @@ class YouTubeTranscriber:
             "Content-Type": "application/json"
         }
     
+    def clean_text(self, text: str) -> str:
+        """清理文本中的特殊标记
+        Args:
+            text: 原始文本
+        Returns:
+            str: 清理后的文本
+        """
+        # 去除语音识别产生的特殊标记
+        text = text.replace('<speech>', '')
+        text = text.replace('</speech>', '')
+        text = text.replace('<noise>', '')
+        text = text.replace('</noise>', '')
+        text = text.replace('<silence>', '')
+        text = text.replace('</silence>', '')
+        
+        # 去除多余的空白字符
+        text = ' '.join(text.split())
+        
+        return text
+    
+    def merge_text_parts(self, parts: list, is_paragraphs: bool = False) -> str:
+        """智能合并文本片段
+        Args:
+            parts: 文本片段列表
+            is_paragraphs: 是否按段落格式合并
+        Returns:
+            str: 合并后的文本
+        """
+        if not parts:
+            return ""
+            
+        if is_paragraphs:
+            # 按段落合并，确保段落之间有空行
+            merged = []
+            for part in parts:
+                # 清理每个段落的首尾空白
+                cleaned_part = part.strip()
+                if cleaned_part:
+                    # 确保每个段落末尾有适当的标点
+                    if not cleaned_part[-1] in '。！？；.!?;':
+                        cleaned_part += '。'
+                    merged.append(cleaned_part)
+            return '\n\n'.join(merged)
+        else:
+            # 按句子合并，确保句子之间有适当的标点
+            merged = ""
+            for i, part in enumerate(parts):
+                cleaned_part = part.strip()
+                if not cleaned_part:
+                    continue
+                    
+                if i > 0:
+                    # 检查前一个句子的结尾和当前句子的开头
+                    if not merged[-1] in '。！？；.!?;' and \
+                       not cleaned_part[0] in '。！？；.!?;':
+                        merged += "。"
+                    elif merged[-1] in '.!?;' and cleaned_part[0] not in '。！？；.!?;':
+                        # 将英文标点替换为中文标点
+                        merged = merged[:-1] + '。'
+                
+                merged += cleaned_part
+            
+            # 确保最后一句有结束标点
+            if merged and not merged[-1] in '。！？；.!?;':
+                merged += '。'
+            
+            return merged
+    
+    def split_text(self, text: str) -> tuple:
+        """智能分割文本
+        Args:
+            text: 要分割的文本
+        Returns:
+            tuple: (segments, is_paragraphs)，分割后的片段列表和是否按段落分割的标志
+        """
+        # 首先尝试按段落分割
+        paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
+        
+        # 如果有多个段落，按段落处理
+        if len(paragraphs) > 1:
+            return paragraphs, True
+        
+        # 否则按句子分割
+        sentences = []
+        current = []
+        
+        # 更智能的句子分割
+        for char in text:
+            current.append(char)
+            if char in '.!?。！？':
+                sentence = ''.join(current).strip()
+                # 避免错误分割常见缩写
+                if not any(sentence.endswith(abbr) for abbr in [
+                    'Mr.', 'Mrs.', 'Dr.', 'Ph.D.', 'U.S.', 'U.K.',
+                    'a.m.', 'p.m.', 'i.e.', 'e.g.', 'etc.'
+                ]):
+                    if sentence:
+                        sentences.append(sentence)
+                    current = []
+        
+        # 处理最后一个句子
+        if current:
+            sentence = ''.join(current).strip()
+            if sentence:
+                sentences.append(sentence)
+        
+        return sentences, False
+    
     def polish_text(self, text: str) -> str:
         """使用通义千问语言模型优化文本格式"""
         try:
             print("→ 优化文本中...")
             
-            response = dashscope.Generation.call(
-                model='qwen-plus',
-                messages=[
-                    {'role': 'system', 'content': self.POLISH_SYSTEM_PROMPT},
-                    {'role': 'user', 'content': self.POLISH_USER_PROMPT.format(text=text)}
-                ],
-                result_format='message',
-                max_tokens=5000,  # 增加输出长度限制
-                temperature=0.2,
-                top_p=0.9,
-                enable_search=True,
-                seed=random.randint(1, 10000)
-            )
+            # 首先清理特殊标记
+            text = self.clean_text(text)
             
-            if response.status_code == HTTPStatus.OK:
-                polished_text = response.output.choices[0].message.content
-                print("✓ 优化完成")
+            # 估算tokens数量
+            def estimate_tokens(s: str) -> int:
+                chinese_chars = sum(1 for c in s if ord(c) > 127)
+                english_chars = len(''.join(c for c in s if ord(c) <= 127))
+                return int(chinese_chars * 2 + english_chars * 0.25)
+            
+            # 计算系统提示词和用户提示词模板的基础tokens
+            base_tokens = estimate_tokens(self.POLISH_SYSTEM_PROMPT) + \
+                         estimate_tokens(self.POLISH_USER_PROMPT.replace("{text}", ""))
+            
+            # 计算输入文本的预估tokens
+            input_tokens = estimate_tokens(text)
+            total_tokens = base_tokens + input_tokens
+            
+            # 如果总tokens超过限制，需要分段处理
+            if total_tokens > 6000:  # 更保守的限制
+                print(f"→ 文本较长，将分段处理")
+                print(f"  • 预估tokens: {total_tokens}")
+                
+                # 智能分割文本
+                segments, is_paragraphs = self.split_text(text)
+                
+                # 分批处理
+                current_batch = []
+                current_tokens = base_tokens
+                polished_parts = []
+                
+                for segment in segments:
+                    segment_tokens = estimate_tokens(segment)
+                    
+                    # 如果当前段落加上已有内容会超过限制，先处理已有内容
+                    if current_tokens + segment_tokens > 6000 and current_batch:
+                        # 处理当前批次
+                        batch_text = self.merge_text_parts(current_batch, is_paragraphs)
+                        print(f"  • 处理批次: {len(batch_text)} 字符 ({current_tokens} tokens)")
+                        
+                        response = self.api_call_with_retry(
+                            dashscope.Generation.call,
+                            model='qwen-plus',
+                            messages=[
+                                {'role': 'system', 'content': self.POLISH_SYSTEM_PROMPT},
+                                {'role': 'user', 'content': self.POLISH_USER_PROMPT.format(text=batch_text)}
+                            ],
+                            result_format='message',
+                            max_tokens=4096,
+                            temperature=0.2,
+                            top_p=0.9,
+                            enable_search=True,
+                            seed=random.randint(1, 10000)
+                        )
+                        
+                        if response.status_code == HTTPStatus.OK:
+                            self.total_tokens['qwen-plus'] += response.usage.total_tokens
+                            polished_parts.append(response.output.choices[0].message.content.strip())
+                            print(f"    ✓ 本批使用 {response.usage.total_tokens} tokens")
+                        else:
+                            print(f"    ❌ 批次处理失败: {response.message}")
+                            polished_parts.append(batch_text)
+                        
+                        current_batch = [segment]
+                        current_tokens = base_tokens + segment_tokens
+                    else:
+                        current_batch.append(segment)
+                        current_tokens += segment_tokens
+                
+                # 处理最后一批
+                if current_batch:
+                    batch_text = self.merge_text_parts(current_batch, is_paragraphs)
+                    print(f"  • 处理最后批次: {len(batch_text)} 字符 ({current_tokens} tokens)")
+                    
+                    response = self.api_call_with_retry(
+                        dashscope.Generation.call,
+                        model='qwen-plus',
+                        messages=[
+                            {'role': 'system', 'content': self.POLISH_SYSTEM_PROMPT},
+                            {'role': 'user', 'content': self.POLISH_USER_PROMPT.format(text=batch_text)}
+                        ],
+                        result_format='message',
+                        max_tokens=4096,
+                        temperature=0.2,
+                        top_p=0.9,
+                        enable_search=True,
+                        seed=random.randint(1, 10000)
+                    )
+                    
+                    if response.status_code == HTTPStatus.OK:
+                        self.total_tokens['qwen-plus'] += response.usage.total_tokens
+                        polished_parts.append(response.output.choices[0].message.content.strip())
+                        print(f"    ✓ 本批使用 {response.usage.total_tokens} tokens")
+                    else:
+                        print(f"    ❌ 最后批次处理失败: {response.message}")
+                        polished_parts.append(batch_text)
+                
+                # 合并所有处理结果
+                polished_text = self.merge_text_parts(polished_parts, is_paragraphs)
+                print("✓ 分段处理完成")
+                
+                # 验证内容完整性
+                original_chars = sum(len(s.strip()) for s in segments)
+                polished_chars = len(''.join(c for c in polished_text if c not in '\n\r\t '))
+                if polished_chars < original_chars * 0.9:  # 如果优化后的内容少于原内容的90%
+                    print("⚠️ 检测到内容可能有丢失，使用原文")
+                    return text
+                
                 return polished_text
             else:
-                raise Exception(f"优化请求失败: {response.message}")
+                print(f"→ 文本长度适中，单次处理")
+                print(f"  • 预估tokens: {total_tokens}")
+                
+                response = self.api_call_with_retry(
+                    dashscope.Generation.call,
+                    model='qwen-plus',
+                    messages=[
+                        {'role': 'system', 'content': self.POLISH_SYSTEM_PROMPT},
+                        {'role': 'user', 'content': self.POLISH_USER_PROMPT.format(text=text)}
+                    ],
+                    result_format='message',
+                    max_tokens=4096,
+                    temperature=0.2,
+                    top_p=0.9,
+                    enable_search=True,
+                    seed=random.randint(1, 10000)
+                )
+                
+                if response.status_code == HTTPStatus.OK:
+                    self.total_tokens['qwen-plus'] += response.usage.total_tokens
+                    polished_text = response.output.choices[0].message.content
+                    print(f"  ✓ 使用 {response.usage.total_tokens} tokens")
+                    
+                    # 验证内容完整性
+                    original_chars = len(''.join(c for c in text if c not in '\n\r\t '))
+                    polished_chars = len(''.join(c for c in polished_text if c not in '\n\r\t '))
+                    if polished_chars < original_chars * 0.9:  # 如果优化后的内容少于原内容的90%
+                        print("⚠️ 检测到内容可能有丢失，使用原文")
+                        return text
+                    
+                    return polished_text
+                else:
+                    raise Exception(f"优化请求失败: {response.message}")
             
         except Exception as e:
             print(f"❌ 优化失败: {str(e)}")
-            return text
+            return text  # 优化失败时返回原文本，不中止程序
     
     def translate_text(self, text: str) -> str:
         """使用通义千问翻译英文文本为中文"""
         try:
+            # 首先清理特殊标记
+            text = self.clean_text(text)
+            
             # 检查输入文本长度
             input_length = len(text)
             print(f"→ 输入文本长度: {input_length} 字符")
@@ -548,49 +878,52 @@ class YouTubeTranscriber:
                 
             print("→ 翻译中...")
             
-            # 估算tokens数量（粗略估计：英文单词约1.3个tokens，中文字符约2.5个tokens）
+            # 估算tokens数量（粗略估计：英文单词约1.3个tokens，中文字符约2个tokens）
             def estimate_tokens(s: str) -> int:
                 chinese_chars = sum(1 for c in s if ord(c) > 127)
-                english_chars = sum(1 for c in s if ord(c) <= 127)
-                return int(chinese_chars * 2.5 + english_chars * 0.25)
+                english_chars = len(''.join(c for c in s if ord(c) <= 127))
+                return int(chinese_chars * 2 + english_chars * 0.25)
             
             # 计算系统提示词和用户提示词模板的基础tokens
             base_tokens = estimate_tokens(self.TRANSLATE_SYSTEM_PROMPT) + \
                          estimate_tokens(self.TRANSLATE_USER_PROMPT.replace("{text}", ""))
             print(f"→ 提示词基础tokens: {base_tokens}")
             
-            # 考虑到qwen-plus的30K tokens限制，预留5K给输出，实际可用约24K
+            # qwen-plus的30K tokens限制，预留4K给输出（减少单批次负载）
             # 减去基础提示词tokens后，计算单次能处理的最大文本长度
-            max_text_tokens = 24000 - base_tokens
+            max_text_tokens = 6000 - base_tokens  # 更保守的限制，约 6K tokens
             max_chars = int(max_text_tokens / 0.25)  # 对于英文文本，平均每个字符0.25个token
             
             # 如果文本太长，需要分段处理
             if input_length > max_chars:
                 print(f"→ 文本较长，将分段处理")
                 print(f"  • 单次最大处理: {max_chars} 字符（约 {max_text_tokens} tokens）")
-                # 按句子分割
-                sentences = text.replace('。', '.').replace('！', '!').replace('？', '?').split('.')
-                translated_parts = []
-                current_part = []
-                current_length = 0
                 
-                for i, sentence in enumerate(sentences, 1):
-                    sentence = sentence.strip()
-                    if not sentence:
-                        continue
+                # 智能分割文本
+                segments, is_paragraphs = self.split_text(text)
+                
+                translated_parts = []
+                current_batch = []
+                current_tokens = base_tokens
+                
+                for segment in segments:
+                    segment_tokens = estimate_tokens(segment)
+                    
+                    # 如果当前段落加上已有内容会超过限制，先处理已有内容
+                    if current_tokens + segment_tokens > max_text_tokens and current_batch:
+                        # 处理当前批次
+                        batch_text = self.merge_text_parts(current_batch, is_paragraphs)
+                        print(f"  • 处理第 {len(translated_parts)+1} 批: {len(batch_text)} 字符 ({current_tokens} tokens)")
                         
-                    # 如果当前句子加上已有内容超过限制，先处理已有内容
-                    if current_length + len(sentence) > max_chars and current_part:
-                        part_text = '. '.join(current_part)
-                        print(f"  • 处理第 {len(translated_parts)+1} 批: {len(part_text)} 字符")
-                        response = dashscope.Generation.call(
+                        response = self.api_call_with_retry(
+                            dashscope.Generation.call,
                             model='qwen-plus',
                             messages=[
                                 {'role': 'system', 'content': self.TRANSLATE_SYSTEM_PROMPT},
-                                {'role': 'user', 'content': self.TRANSLATE_USER_PROMPT.format(text=part_text)}
+                                {'role': 'user', 'content': self.TRANSLATE_USER_PROMPT.format(text=batch_text)}
                             ],
                             result_format='message',
-                            max_tokens=5000,  # 增加输出长度限制
+                            max_tokens=4096,
                             temperature=0.3,
                             top_p=0.95,
                             enable_search=True,
@@ -598,30 +931,33 @@ class YouTubeTranscriber:
                         )
                         
                         if response.status_code == HTTPStatus.OK:
-                            part_result = response.output.choices[0].message.content.strip()
-                            translated_parts.append(part_result)
+                            self.total_tokens['qwen-plus'] += response.usage.total_tokens
+                            translated_parts.append(response.output.choices[0].message.content.strip())
+                            print(f"    ✓ 本批使用 {response.usage.total_tokens} tokens")
                         else:
-                            print(f"  ❌ 第 {len(translated_parts)+1} 批翻译失败: {response.message}")
-                            translated_parts.append(part_text)
+                            print(f"    ❌ 第 {len(translated_parts)+1} 批翻译失败: {response.message}")
+                            raise Exception(f"翻译请求失败: {response.message}")
                         
-                        current_part = []
-                        current_length = 0
-                    
-                    current_part.append(sentence)
-                    current_length += len(sentence) + 2  # +2 for '. '
+                        current_batch = [segment]
+                        current_tokens = base_tokens + segment_tokens
+                    else:
+                        current_batch.append(segment)
+                        current_tokens += segment_tokens
                 
                 # 处理最后一批
-                if current_part:
-                    part_text = '. '.join(current_part)
-                    print(f"  • 处理最后一批: {len(part_text)} 字符")
-                    response = dashscope.Generation.call(
+                if current_batch:
+                    batch_text = self.merge_text_parts(current_batch, is_paragraphs)
+                    print(f"  • 处理最后一批: {len(batch_text)} 字符 ({current_tokens} tokens)")
+                    
+                    response = self.api_call_with_retry(
+                        dashscope.Generation.call,
                         model='qwen-plus',
                         messages=[
                             {'role': 'system', 'content': self.TRANSLATE_SYSTEM_PROMPT},
-                            {'role': 'user', 'content': self.TRANSLATE_USER_PROMPT.format(text=part_text)}
+                            {'role': 'user', 'content': self.TRANSLATE_USER_PROMPT.format(text=batch_text)}
                         ],
                         result_format='message',
-                        max_tokens=5000,  # 增加输出长度限制
+                        max_tokens=4096,
                         temperature=0.3,
                         top_p=0.95,
                         enable_search=True,
@@ -629,24 +965,41 @@ class YouTubeTranscriber:
                     )
                     
                     if response.status_code == HTTPStatus.OK:
-                        part_result = response.output.choices[0].message.content.strip()
-                        translated_parts.append(part_result)
+                        self.total_tokens['qwen-plus'] += response.usage.total_tokens
+                        translated_parts.append(response.output.choices[0].message.content.strip())
+                        print(f"    ✓ 本批使用 {response.usage.total_tokens} tokens")
                     else:
-                        print(f"  ❌ 最后一批翻译失败: {response.message}")
-                        translated_parts.append(part_text)
+                        print(f"    ❌ 最后一批翻译失败: {response.message}")
+                        raise Exception(f"翻译请求失败: {response.message}")
                 
-                translated_text = "。".join(translated_parts)
+                # 合并所有翻译结果
+                translated_text = self.merge_text_parts(translated_parts, is_paragraphs)
+                
+                # 验证内容完整性
+                original_words = len([w for w in text.split() if any(ord(c) < 128 for c in w)])  # 统计英文单词数
+                translated_chars = len(''.join(c for c in translated_text if ord(c) > 127))  # 统计中文字符数
+                
+                # 英文单词和中文字符的比例通常在 1:1.5 到 1:2.5 之间
+                # 如果比例过低，可能表示翻译不完整
+                ratio = translated_chars / original_words if original_words > 0 else float('inf')
+                if ratio < 1.0:  # 如果平均每个英文单词对应的中文字符数小于1，可能有问题
+                    print(f"⚠️ 检测到内容可能有丢失 (英文单词数: {original_words}, 中文字符数: {translated_chars}, 比例: {ratio:.2f})")
+                    raise Exception("翻译结果不完整")
+                
             else:
                 print(f"→ 文本长度适中，单次处理")
-                print(f"  • 预估tokens: {estimate_tokens(text) + base_tokens}")
-                response = dashscope.Generation.call(
+                estimated_tokens = estimate_tokens(text) + base_tokens
+                print(f"  • 预估tokens: {estimated_tokens}")
+                
+                response = self.api_call_with_retry(
+                    dashscope.Generation.call,
                     model='qwen-plus',
                     messages=[
                         {'role': 'system', 'content': self.TRANSLATE_SYSTEM_PROMPT},
                         {'role': 'user', 'content': self.TRANSLATE_USER_PROMPT.format(text=text)}
                     ],
                     result_format='message',
-                    max_tokens=5000,  # 增加输出长度限制
+                    max_tokens=8192,
                     temperature=0.3,
                     top_p=0.95,
                     enable_search=True,
@@ -654,7 +1007,20 @@ class YouTubeTranscriber:
                 )
                 
                 if response.status_code == HTTPStatus.OK:
+                    self.total_tokens['qwen-plus'] += response.usage.total_tokens
                     translated_text = response.output.choices[0].message.content
+                    print(f"  ✓ 使用 {response.usage.total_tokens} tokens")
+                    
+                    # 验证内容完整性
+                    original_words = len([w for w in text.split() if any(ord(c) < 128 for c in w)])  # 统计英文单词数
+                    translated_chars = len(''.join(c for c in translated_text if ord(c) > 127))  # 统计中文字符数
+                    
+                    # 英文单词和中文字符的比例通常在 1:1.5 到 1:2.5 之间
+                    # 如果比例过低，可能表示翻译不完整
+                    ratio = translated_chars / original_words if original_words > 0 else float('inf')
+                    if ratio < 1.0:  # 如果平均每个英文单词对应的中文字符数小于1，可能有问题
+                        print(f"⚠️ 检测到内容可能有丢失 (英文单词数: {original_words}, 中文字符数: {translated_chars}, 比例: {ratio:.2f})")
+                        raise Exception("翻译结果不完整")
                 else:
                     raise Exception(f"翻译请求失败: {response.message}")
             
@@ -669,7 +1035,7 @@ class YouTubeTranscriber:
             
         except Exception as e:
             print(f"❌ 翻译失败: {str(e)}")
-            return text
+            raise  # 翻译失败时抛出异常，中止程序
 
 def main():
     try:
