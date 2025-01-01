@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+env/
 build/
 develop-eggs/
 dist/
@@ -20,10 +21,9 @@ wheels/
 .installed.cfg
 *.egg
 
-# Environment variables
-.env
-.env.*
-!.env.example
+# Virtual Environment
+venv/
+ENV/
 
 # IDE
 .idea/
@@ -31,6 +31,9 @@ wheels/
 *.swp
 *.swo
 
-# OS
-.DS_Store
-Thumbs.db
+# Project specific
+.env
+outputs/
+*.wav
+transcript*.txt
+audio_*.wav

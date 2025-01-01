@@ -1,0 +1,6 @@
+yt-dlp>=2023.12.30
+pydub>=0.25.1
+python-dotenv>=1.0.0
+dashscope>=1.13.6
+requests>=2.31.0
+oss2>=2.18.3 
