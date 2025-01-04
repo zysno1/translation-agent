@@ -33,10 +33,11 @@ ENV/
 
 # Project specific
 .env
-outputs/
+output/
+temp/
+logs/
 *.wav
 transcript*.txt
 audio_*.wav
 
 # History data
-data/

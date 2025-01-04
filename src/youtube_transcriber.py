@@ -262,10 +262,10 @@ class YouTubeTranscriber:
     # 定义目录结构
     DIRS = {
         'root': '.',  # 根目录
-        'logs': 'logs',  # 日志目录
-        'temp': 'temp',  # 临时文件目录
-        'output': 'output',  # 输出目录
-        'transcripts': 'transcripts'  # 转写文本目录
+        'logs': '../logs',  # 日志目录
+        'temp': '../temp',  # 临时文件目录
+        'output': '../output',  # 输出目录
+        'transcripts': '../transcripts'  # 转写文本目录
     }
     
     # 定义文件命名模板
