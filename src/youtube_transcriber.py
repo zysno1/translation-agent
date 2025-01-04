@@ -25,6 +25,10 @@ from typing import Optional, Dict, List, Tuple
 from pytube import YouTube
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import textwrap
+try:
+    from terms import PROFESSIONAL_TERMS
+except ImportError:
+    from src.terms import PROFESSIONAL_TERMS
 
 # 加载 .env 文件
 load_dotenv()
@@ -272,31 +276,52 @@ class YouTubeTranscriber:
     }
     
     # 翻译的提示词
-    TRANSLATE_SYSTEM_PROMPT = """你是一个专业的翻译引擎。你的任务是将英文文本翻译成中文。
-要求：
-1. 保持专业、客观的翻译风格
-2. 直接输出翻译结果，不要添加任何额外的说明文字
-3. 准确传达原文的意思，避免添加或删减内容
-4. 使用规范的中文表达
-5. 保持原文的段落结构
-6. 对于专业术语，保持其专业性和准确性"""
+    TRANSLATE_SYSTEM_PROMPT = """你是一位专业的英译中翻译专家，专门从事人工智能、机器学习系统(MLSys)、大语言模型(LLM)和云原生领域的技术文档翻译。你需要：
 
-    TRANSLATE_USER_PROMPT = """请将以下文本翻译成中文：
+1. 保持专业性：
+- 准确理解并翻译专业术语
+- 保持技术文档的严谨性
+- 确保翻译后的内容对目标领域的技术人员友好
+
+2. 翻译风格：
+- 采用中性、专业的语气
+- 保持句式流畅自然
+- 避免过度口语化
+- 适当保留关键的英文术语
+
+3. 术语处理：
+- 优先使用领域内约定俗成的中文译名
+- 首次出现的专业术语可采用"中文(英文)"的形式
+- 对于新兴概念，可保留原有英文表述
+- 参考已提供的专业术语对照表
+
+4. 特殊要求：
+- 保留代码片段、变量名和函数名中的英文
+- 保持文本的格式和结构
+- 确保数字、单位和标点符号的正确性
+- 注意上下文的连贯性
+
+请基于以上要求，提供准确、专业、流畅的中文翻译。"""
+
+    TRANSLATE_USER_PROMPT = """请将以下英文文本翻译成中文：
 
 {text}
 
 要求：
-1. 保持专业、客观的翻译风格
-2. 直接输出翻译结果
-3. 准确传达原文的意思
-4. 使用规范的中文表达"""
+1. 保持专业性和准确性
+2. 遵循术语表中的标准翻译
+3. 适当保留关键英文术语
+4. 确保翻译流畅自然"""
 
-    # Token 价格（元/1K tokens）
+    # Token 价格（元/1K tokens）和语音识别价格（元/秒）
+    PRICE_PER_SECOND = {
+        'paraformer-v2': 0.00008,  # 语音识别价格（元/秒）
+    }
+    
     PRICE_PER_1K_TOKENS = {
         'qwen-plus': 0.1,  # 通义千问-Plus 模型价格
         'qwen-turbo': 0.008,  # 通义千问-Turbo 模型价格
-        'qwen-max': 0.2,  # 通义千问-Max 模型价格
-        'sensevoice-v1': 0.0015  # 语音识别价格（元/秒）
+        'qwen-max': 0.2  # 通义千问-Max 模型价格
     }
 
     def __init__(self):
@@ -328,6 +353,13 @@ class YouTubeTranscriber:
         # 初始化其他配置...
         self.temp_files = []
         self.output_files = []
+        
+        # 初始化费用统计
+        self.total_tokens = {
+            'qwen-plus': 0,
+            'qwen-turbo': 0,
+            'paraformer-v2': 0
+        }
         
         # 验证环境变量
         self.verify_env_variables()
@@ -396,9 +428,15 @@ class YouTubeTranscriber:
                 self.logger.info(f"- URL: {url}")
                 self.logger.info(f"- 时长: {duration} 秒")
                 
-                # 预估处理时间（根据视频时长估算）
-                estimated_time = duration * 1.5  # 假设处理时间是视频时长的1.5倍
-                self.logger.info(f"预计处理时间: {self.format_time(estimated_time)}")
+                # 预估处理时间
+                time_estimates = self.estimate_processing_time(duration)
+                self.logger.info("处理时间预估:")
+                self.logger.info(f"- 视频下载: {self.format_time(time_estimates['download'])}")
+                self.logger.info(f"- 音频处理: {self.format_time(time_estimates['audio_process'])}")
+                self.logger.info(f"- 文件上传: {self.format_time(time_estimates['upload'])}")
+                self.logger.info(f"- 语音识别: {self.format_time(time_estimates['recognition'])}")
+                self.logger.info(f"- 文本翻译: {self.format_time(time_estimates['translation'])}")
+                self.logger.info(f"- 预计总时间: {self.format_time(time_estimates['total'])}")
                 
             except Exception as e:
                 self.logger.error(f"获取视频信息失败: {str(e)}")
@@ -423,13 +461,15 @@ class YouTubeTranscriber:
                 self.logger.info("开始语音识别流程...")
                 results = self.recognize_speech(processed_audio_path, file_url)
                 if not results:
-                    raise Exception("语音识别失败")
+                    self.logger.error("语音识别失败，程序退出")
+                    sys.exit(1)  # 语音识别失败时直接退出
                     
                 # 提取文本
                 self.logger.info("开始提取识别文本...")
                 text_segments = self.extract_text_from_result(results)
                 if not text_segments:
-                    raise Exception("文本提取失败")
+                    self.logger.error("文本提取失败，程序退出")
+                    sys.exit(1)  # 文本提取失败时直接退出
                     
                 # 记录文本统计信息
                 total_words = sum(len(text.split()) for text, _, _ in text_segments)
@@ -457,6 +497,9 @@ class YouTubeTranscriber:
                 # 翻译文本
                 self.logger.info("开始文本翻译流程...")
                 translated_text = self.translate_text(original_text)
+                if not translated_text or translated_text == original_text:
+                    self.logger.error("文本翻译失败，程序退出")
+                    sys.exit(1)  # 翻译失败时直接退出
                 
                 # 保存最终文本
                 final_path = os.path.join(self.DIRS['transcripts'], final_filename)
@@ -608,83 +651,58 @@ class YouTubeTranscriber:
 
     @retry_on_timeout(max_retries=3, base_delay=1)
     def translate_text(self, text: str) -> str:
-        """翻译文本。
+        """翻译文本
         
         Args:
-            text (str): 要翻译的文本
+            text: 要翻译的文本
             
         Returns:
             str: 翻译后的文本
         """
         try:
             self.logger.info("开始翻译文本...")
+            self.logger.debug(f"原文长度: {len(text)} 字符")
             
-            # 分段处理文本
-            segments = self.split_text_for_translation(text)
-            self.logger.debug(f"文本已分为 {len(segments)} 段进行翻译")
-            translated_segments = []
+            # 估算token数量（粗略估计：每4个字符约1个token）
+            estimated_tokens = len(text) // 4
+            estimated_cost = (estimated_tokens / 1000) * self.PRICE_PER_1K_TOKENS['qwen-plus']
             
-            # 翻译每个段落
-            for i, segment in enumerate(segments, 1):
-                self.logger.info(f"翻译第 {i}/{len(segments)} 段...")
-                self.logger.debug(f"原文段落 {i}:\n{segment}")
-                
-                # 构建请求消息
-                messages = [{
-                    'role': 'system',
-                    'content': self.TRANSLATE_SYSTEM_PROMPT
-                }, {
-                    'role': 'user',
-                    'content': self.TRANSLATE_USER_PROMPT.format(text=segment)
-                }]
-                
-                # 记录请求参数
-                request_params = {
-                    'model': 'qwen-turbo',
-                    'prompt': self.TRANSLATE_SYSTEM_PROMPT,
-                    'messages': messages
-                }
-                self.logger.debug(f"翻译请求参数:\n{json.dumps(request_params, ensure_ascii=False, indent=2)}")
-                
-                # 记录请求开始时间
-                start_time = time.time()
-                
-                # 使用通义千问进行翻译
-                response = Generation.call(**request_params)
-                
-                # 记录请求耗时
-                end_time = time.time()
-                duration = end_time - start_time
-                self.logger.debug(f"翻译请求耗时: {duration:.2f}秒")
-                
-                # 记录完整响应
-                self.logger.debug(f"翻译响应:\n{json.dumps(response.__dict__, ensure_ascii=False, indent=2)}")
-                
-                if response.status_code == HTTPStatus.OK:
-                    translated_text = response.output.text
-                    self.logger.debug(f"翻译结果 {i}:\n{translated_text}")
-                    translated_segments.append(translated_text)
-                    
-                    # 记录token使用情况
-                    if hasattr(response, 'usage') and response.usage:
-                        self.logger.debug(f"Token使用情况: {json.dumps(response.usage.__dict__, ensure_ascii=False, indent=2)}")
-                else:
-                    error_msg = f"翻译失败: {response.message}"
-                    self.logger.error(error_msg)
-                    self.logger.debug(f"错误响应:\n{json.dumps(response.__dict__, ensure_ascii=False, indent=2)}")
-                    raise Exception(error_msg)
+            self.logger.debug(f"预估token数: {estimated_tokens}")
+            self.logger.debug(f"预估成本: ¥{estimated_cost:.4f}")
             
-            # 合并翻译结果
-            translated_text = '\n\n'.join(translated_segments)
-            self.logger.debug(f"最终翻译结果:\n{translated_text}")
-            self.logger.info("翻译完成")
+            # 构建系统提示词
+            messages = [
+                {"role": "system", "content": self.TRANSLATE_SYSTEM_PROMPT},
+                {"role": "user", "content": self.TRANSLATE_USER_PROMPT.format(text=text)}
+            ]
+            
+            # 调用翻译API
+            response = self.api_call_with_retry(
+                Generation.call,
+                model='qwen-plus',
+                messages=messages
+            )
+            
+            if not response or not response.output or not response.output.text:
+                raise Exception("翻译API返回无效响应")
+                
+            # 更新token统计
+            if response.usage:
+                total_tokens = response.usage.total_tokens
+                self.total_tokens['qwen-plus'] = float(total_tokens)  # 更新token统计
+                actual_cost = (total_tokens / 1000) * self.PRICE_PER_1K_TOKENS['qwen-plus']
+                self.logger.debug(f"实际使用token数: {total_tokens}")
+                self.logger.debug(f"实际成本: ¥{actual_cost:.4f}")
+            
+            translated_text = response.output.text.strip()
+            self.logger.info("文本翻译完成")
             return translated_text
             
         except Exception as e:
             self.logger.error(f"翻译文本时出错: {str(e)}")
             self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
-            raise
-            
+            return text  # 出错时返回原文
+    
     def print_token_statistics(self) -> None:
         """打印令牌使用统计信息。"""
         self.logger.info("音频处理统计:")
@@ -752,26 +770,31 @@ class YouTubeTranscriber:
     
     def check_cost_warning(self):
         """检查费用是否超过预警阈值"""
-        total_cost = 0
-        
-        # 计算各项费用
-        qwen_plus_tokens = self.total_tokens.get('qwen-plus', 0)
-        qwen_plus_cost = (qwen_plus_tokens / 1000) * self.PRICE_PER_1K_TOKENS['qwen-plus']
-        
-        qwen_turbo_tokens = self.total_tokens.get('qwen-turbo', 0)
-        qwen_turbo_cost = (qwen_turbo_tokens / 1000) * self.PRICE_PER_1K_TOKENS['qwen-turbo']
-        
-        audio_duration = self.total_tokens.get('sensevoice-v1', 0)
-        audio_cost = audio_duration * self.PRICE_PER_1K_TOKENS['sensevoice-v1']
-        
-        total_cost = qwen_plus_cost + qwen_turbo_cost + audio_cost
-        
-        if total_cost >= self.cost_warning_threshold:
-            self.logger.warning(f"费用预警: 当前总费用 ¥{total_cost:.2f} 已超过预警阈值 ¥{self.cost_warning_threshold:.2f}")
-            self.logger.warning(f"• 通义千问-Plus: ¥{qwen_plus_cost:.2f}")
-            self.logger.warning(f"• 通义千问-Turbo: ¥{qwen_turbo_cost:.2f}")
-            self.logger.warning(f"• 语音识别: ¥{audio_cost:.2f}")
+        try:
+            total_cost = 0
             
+            # 计算各项费用
+            qwen_plus_tokens = self.total_tokens.get('qwen-plus', 0)
+            qwen_plus_cost = (qwen_plus_tokens / 1000) * self.PRICE_PER_1K_TOKENS['qwen-plus']
+            
+            qwen_turbo_tokens = self.total_tokens.get('qwen-turbo', 0)
+            qwen_turbo_cost = (qwen_turbo_tokens / 1000) * self.PRICE_PER_1K_TOKENS['qwen-turbo']
+            
+            # 语音识别成本计算（基于时长）
+            audio_duration = float(self.total_tokens.get('paraformer-v2', 0))  # 确保转换为浮点数
+            audio_cost = audio_duration * self.PRICE_PER_SECOND['paraformer-v2']
+            
+            total_cost = qwen_plus_cost + qwen_turbo_cost + audio_cost
+            
+            if total_cost >= self.cost_warning_threshold:
+                self.logger.warning(f"费用预警: 当前总费用 ¥{total_cost:.4f} 已超过预警阈值 ¥{self.cost_warning_threshold:.2f}")
+                self.logger.warning(f"• 通义千问-Plus: ¥{qwen_plus_cost:.4f}")
+                self.logger.warning(f"• 通义千问-Turbo: ¥{qwen_turbo_cost:.4f}")
+                self.logger.warning(f"• 语音识别 (Paraformer-v2): ¥{audio_cost:.4f} ({audio_duration:.2f}秒)")
+        except Exception as e:
+            self.logger.error(f"计算成本时出错: {str(e)}")
+            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
+    
     def extract_text_from_result(self, result: Dict) -> List[Tuple[str, float, float]]:
         """从转写结果中提取文本和时间戳。
         
@@ -847,10 +870,26 @@ class YouTubeTranscriber:
             Optional[Dict]: 识别结果
         """
         try:
-            # 计算音频文件大小
+            # 计算音频文件大小和时长
             file_size = os.path.getsize(audio_path) / (1024 * 1024)  # 转换为MB
-            self.logger.info(f"音频文件大小: {file_size:.2f}MB")
+            audio = AudioSegment.from_file(audio_path)
+            duration = len(audio) / 1000  # 转换为秒
             
+            self.logger.debug(f"音频文件信息:")
+            self.logger.debug(f"- 路径: {audio_path}")
+            self.logger.debug(f"- 大小: {file_size:.2f}MB")
+            self.logger.debug(f"- 时长: {duration:.2f}秒")
+            self.logger.debug(f"- 采样率: {audio.frame_rate}Hz")
+            self.logger.debug(f"- 声道数: {audio.channels}")
+            self.logger.debug(f"- 位深度: {audio.sample_width * 8}位")
+            
+            # 预估成本
+            estimated_cost = duration * self.PRICE_PER_SECOND['paraformer-v2']
+            self.logger.debug(f"预估成本: ¥{estimated_cost:.4f}")
+            
+            # 更新总费用统计
+            self.total_tokens['paraformer-v2'] = float(duration)  # 更新语音识别的时长统计
+
             # 构建请求参数
             request_params = {
                 "model": "paraformer-v2",
@@ -866,48 +905,50 @@ class YouTubeTranscriber:
             
             # 提交异步转写任务
             self.logger.info("提交语音识别任务...")
+            start_time = time.time()
             task_response = Transcription.async_call(**request_params)
             
             # 记录任务提交响应
-            self.logger.debug(f"任务提交响应:\n{json.dumps(task_response, ensure_ascii=False, indent=2)}")
+            self.logger.debug(f"任务提交响应:\n{json.dumps(task_response.__dict__, ensure_ascii=False, indent=2)}")
             
-            if not task_response or not task_response.get("output"):
+            if not task_response or not task_response.output:
                 raise Exception("提交任务失败")
                 
-            # 等待转写结果
-            task_id = task_response["output"]["task_id"]
+            # 获取任务ID
+            task_id = task_response.output.task_id
             self.logger.info(f"等待转写结果... (任务ID: {task_id})")
             
             # 记录轮询开始时间
             poll_start_time = time.time()
             
+            # 等待任务完成并获取结果
             response = Transcription.wait(task=task_id)
             
             # 记录轮询结束时间和总耗时
             poll_end_time = time.time()
+            total_duration = poll_end_time - start_time
             poll_duration = poll_end_time - poll_start_time
-            self.logger.debug(f"转写轮询总耗时: {poll_duration:.2f}秒")
+            
+            self.logger.debug(f"转写任务耗时统计:")
+            self.logger.debug(f"- 总耗时: {total_duration:.2f}秒")
+            self.logger.debug(f"- 轮询耗时: {poll_duration:.2f}秒")
             
             # 检查响应
-            if not response or not response.get("output"):
-                raise Exception("语音识别失败: 无效的响应")
+            if not response or response.status_code != HTTPStatus.OK:
+                error_msg = response.message if response else "无效的响应"
+                raise Exception(f"语音识别失败: {error_msg}")
                 
             # 记录完整的响应内容
-            self.logger.debug(f"转写响应:\n{json.dumps(response, ensure_ascii=False, indent=2)}")
+            self.logger.debug(f"转写最终响应:\n{json.dumps(response.output, ensure_ascii=False, indent=2)}")
             
-            # 计算成本
-            audio_cost = (file_size * 0.1)  # 每MB 0.1元
-            self.logger.info(f"语音识别成本: ¥{audio_cost:.2f}")
+            # 计算实际成本
+            actual_cost = duration * self.PRICE_PER_SECOND['paraformer-v2']
+            self.logger.debug(f"语音识别任务统计:")
+            self.logger.debug(f"- 音频时长: {duration:.2f}秒")
+            self.logger.debug(f"- 实际成本: ¥{actual_cost:.4f} (按 ¥{self.PRICE_PER_SECOND['paraformer-v2']}/秒 计算)")
             
-            # 记录响应状态
-            output = response.get("output", {})
-            self.logger.debug(f"转写任务状态: {output.get('task_status')}")
-            if output.get('code'):
-                self.logger.debug(f"转写任务错误码: {output.get('code')}")
-            if output.get('message'):
-                self.logger.debug(f"转写任务消息: {output.get('message')}")
-            
-            return output
+            self.logger.info("语音识别任务完成")
+            return response.output
             
         except Exception as e:
             self.logger.error(f"语音识别失败: {str(e)}")
@@ -1154,28 +1195,20 @@ class YouTubeTranscriber:
         Args:
             debug (bool): 是否启用调试模式
         """
-        import datetime
-        
         # 创建 logs 目录（如果不存在）
         if not os.path.exists('logs'):
             os.makedirs('logs')
             
         # 生成带时间戳的日志文件名
-        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         log_file = f'logs/transcriber_{timestamp}.log'
         
         # 设置日志格式
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        
-        # 设置文件处理器 - 始终记录 DEBUG 级别的日志到文件
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
-        
-        # 设置控制台处理器 - 根据 debug 标志设置日志级别
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
-        console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
+        file_formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s\n'
+            'File "%(pathname)s", line %(lineno)d'
+        )
+        console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         
         # 配置日志记录器
         self.logger = logging.getLogger('youtube_transcriber')
@@ -1184,12 +1217,27 @@ class YouTubeTranscriber:
         # 清除现有的处理器
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)
-            
-        # 添加处理器
+        
+        # 设置文件处理器 - 始终记录 DEBUG 级别的日志到文件
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(file_formatter)
         self.logger.addHandler(file_handler)
+        
+        # 设置控制台处理器 - 根据 debug 标志设置日志级别
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
+        console_handler.setFormatter(console_formatter)
         self.logger.addHandler(console_handler)
             
+        # 记录初始化信息
         self.logger.info(f'日志文件已创建: {log_file}')
+        if debug:
+            self.logger.debug('调试模式已启用')
+            self.logger.debug('系统信息:')
+            self.logger.debug(f'- Python版本: {sys.version}')
+            self.logger.debug(f'- 操作系统: {sys.platform}')
+            self.logger.debug(f'- 工作目录: {os.getcwd()}')
 
     def log_step(self, step: str, status: str = "开始") -> None:
         """记录步骤状态"""
@@ -1468,10 +1516,17 @@ class YouTubeTranscriber:
             self.handle_error(e, "保存文本")
 
     def clean_resources(self, audio_path: str = None) -> None:
-        """清理临时资源。
+        """清理所有程序执行产生的中间文件。
         
         Args:
-            audio_path (str, optional): 音频文件路径。如果不指定，则清理所有临时文件。
+            audio_path (str, optional): 音频文件路径。如果不指定，则清理所有中间文件。
+            
+        清理内容包括：
+        1. temp目录下的临时文件
+        2. output目录下的输出文件
+        3. OSS上的临时文件
+        
+        注意：logs目录下的日志文件会被保留
         """
         try:
             if audio_path:
@@ -1480,20 +1535,72 @@ class YouTubeTranscriber:
                     os.remove(audio_path)
                     self.logger.info(f"已删除音频文件: {audio_path}")
             else:
-                # 清理temp目录下的所有文件
-                temp_dir = self.DIRS['temp']
-                if os.path.exists(temp_dir):
-                    for file in os.listdir(temp_dir):
-                        file_path = os.path.join(temp_dir, file)
+                # 清理本地目录
+                dirs_to_clean = {
+                    'temp': '临时文件',
+                    'output': '输出文件'  # 移除了 'logs' 目录
+                }
+                
+                for dir_name, file_type in dirs_to_clean.items():
+                    dir_path = self.DIRS.get(dir_name, dir_name)
+                    if os.path.exists(dir_path):
                         try:
-                            if os.path.isfile(file_path):
-                                os.remove(file_path)
-                                self.logger.info(f"已删除临时文件: {file_path}")
+                            # 删除目录下的所有文件
+                            for root, dirs, files in os.walk(dir_path, topdown=False):
+                                for name in files:
+                                    file_path = os.path.join(root, name)
+                                    try:
+                                        os.remove(file_path)
+                                        self.logger.info(f"已删除{file_type}: {file_path}")
+                                    except Exception as e:
+                                        self.logger.warning(f"删除{file_type}失败: {file_path} ({str(e)})")
+                                        
+                            # 尝试删除空目录
+                            try:
+                                os.rmdir(dir_path)
+                                self.logger.info(f"已删除空目录: {dir_path}")
+                            except OSError:
+                                pass  # 目录不为空或其他原因无法删除，忽略错误
+                                    
                         except Exception as e:
-                            self.logger.warning(f"删除文件失败: {file_path} ({str(e)})")
-                            
+                            self.logger.error(f"清理{file_type}目录失败: {dir_path} ({str(e)})")
+
+                # 清理OSS临时文件
+                try:
+                    # 获取OSS配置
+                    access_key = os.getenv('OSS_ACCESS_KEY')
+                    access_secret = os.getenv('OSS_ACCESS_SECRET')
+                    endpoint = os.getenv('OSS_ENDPOINT')
+                    bucket_name = os.getenv('OSS_BUCKET')
+                    
+                    if all([access_key, access_secret, endpoint, bucket_name]):
+                        # 初始化OSS客户端
+                        auth = oss2.Auth(access_key, access_secret)
+                        bucket = oss2.Bucket(auth, endpoint, bucket_name)
+                        
+                        # 删除audio/目录下的所有文件
+                        self.logger.info("开始清理OSS临时文件...")
+                        count = 0
+                        for obj in oss2.ObjectIterator(bucket, prefix='audio/'):
+                            try:
+                                bucket.delete_object(obj.key)
+                                count += 1
+                                self.logger.info(f"已删除OSS文件: {obj.key}")
+                            except Exception as e:
+                                self.logger.warning(f"删除OSS文件失败: {obj.key} ({str(e)})")
+                        
+                        self.logger.info(f"OSS清理完成，共删除 {count} 个文件")
+                    else:
+                        self.logger.warning("未配置OSS环境变量，跳过OSS清理")
+                        
+                except Exception as e:
+                    self.logger.error(f"清理OSS文件失败: {str(e)}")
+                
+                self.logger.info("所有清理任务完成")
+                
         except Exception as e:
-            self.logger.error(f"清理资源失败: {str(e)}")
+            self.logger.error(f"清理资源时发生错误: {str(e)}")
+            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
             # 不抛出异常，因为这是清理步骤
 
     def save_text(self, text_segments: List[Tuple[str, float, float]], output_path: str, video_id: str = None, video_url: str = None, video_title: str = None) -> None:
@@ -1596,7 +1703,18 @@ class YouTubeTranscriber:
             bucket_name = os.getenv('OSS_BUCKET')
             
             if not all([access_key, access_secret, endpoint, bucket_name]):
-                raise ValueError("请设置所有 OSS 相关的环境变量")
+                missing_vars = [var for var, value in {
+                    'OSS_ACCESS_KEY': access_key,
+                    'OSS_ACCESS_SECRET': access_secret,
+                    'OSS_ENDPOINT': endpoint,
+                    'OSS_BUCKET': bucket_name
+                }.items() if not value]
+                raise ValueError(f"缺少OSS配置: {', '.join(missing_vars)}")
+            
+            # 记录OSS配置信息（注意不要记录敏感信息）
+            self.logger.debug("OSS配置信息:")
+            self.logger.debug(f"- Endpoint: {endpoint}")
+            self.logger.debug(f"- Bucket: {bucket_name}")
             
             # 创建 OSS 客户端
             auth = oss2.Auth(access_key, access_secret)
@@ -1605,27 +1723,49 @@ class YouTubeTranscriber:
             # 生成唯一的文件名
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             file_name = f"audio/{timestamp}/{os.path.basename(local_file)}"
+            self.logger.debug(f"OSS目标路径: {file_name}")
+            
+            # 检查本地文件
+            file_size = os.path.getsize(local_file)
+            self.logger.debug(f"本地文件信息:")
+            self.logger.debug(f"- 路径: {local_file}")
+            self.logger.debug(f"- 大小: {file_size/1024/1024:.2f}MB")
             
             # 设置文件元数据
             headers = {
-                'x-oss-object-acl': 'public-read',
-                'x-oss-storage-class': 'Standard',
                 'Content-Type': 'audio/wav',
                 'Cache-Control': 'no-cache'
             }
+            self.logger.debug(f"上传请求头: {headers}")
             
             # 上传文件
+            self.logger.debug("开始上传...")
+            start_time = time.time()
+            
             with open(local_file, 'rb') as f:
-                bucket.put_object(file_name, f, headers=headers)
+                result = bucket.put_object(file_name, f, headers=headers)
+                
+            end_time = time.time()
+            upload_duration = end_time - start_time
+            upload_speed = file_size / (upload_duration * 1024 * 1024)  # MB/s
+            
+            self.logger.debug("上传结果:")
+            self.logger.debug(f"- 状态码: {result.status}")
+            self.logger.debug(f"- 请求ID: {result.request_id}")
+            self.logger.debug(f"- ETag: {result.etag}")
+            self.logger.debug(f"- 耗时: {upload_duration:.2f}秒")
+            self.logger.debug(f"- 速度: {upload_speed:.2f}MB/s")
             
             # 生成带签名的 URL（1小时有效期）
             url = bucket.sign_url('GET', file_name, 3600, slash_safe=True)
+            self.logger.debug(f"生成的签名URL: {url}")
             
-            self.logger.info(f"文件已上传到: {url}")
+            self.logger.info(f"文件上传成功: {file_name}")
             return url
             
         except Exception as e:
             self.logger.error(f"上传文件到 OSS 失败: {str(e)}")
+            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
             raise
 
     def format_text_for_translation(self, text_segments: List[Tuple[str, float, float]]) -> str:
@@ -1694,6 +1834,38 @@ class YouTubeTranscriber:
             self.logger.error(error_msg)
             raise ValueError(error_msg)
 
+    def estimate_processing_time(self, duration: float) -> dict:
+        """预估处理时间（秒）
+        
+        预估公式：
+        总时间 = 下载时间 + 音频处理时间 + 上传时间 + 识别时间 + 翻译时间
+        
+        其中：
+        - 下载时间 ≈ 视频时长 * 0.3（考虑压缩比和网络速度）
+        - 音频处理时间 ≈ 视频时长 * 0.2
+        - 上传时间 ≈ 视频时长 * 0.1（音频文件比视频小）
+        - 识别时间 ≈ 视频时长 * 1.2（语音识别通常需要1-2倍时长）
+        - 翻译时间 ≈ 视频时长 * 0.4（假设每分钟音频产生约100个单词）
+        
+        Args:
+            duration: 视频时长（秒）
+        
+        Returns:
+            dict: 包含各阶段预估时间的字典
+        """
+        estimates = {
+            'download': duration * 0.3,
+            'audio_process': duration * 0.2,
+            'upload': duration * 0.1,
+            'recognition': duration * 1.2,
+            'translation': duration * 0.4
+        }
+        
+        # 计算总时间并添加10%的缓冲
+        estimates['total'] = sum(estimates.values()) * 1.1
+        
+        return estimates
+
 def extract_video_id(url: str) -> Optional[str]:
     """从YouTube URL中提取视频ID。
     
@@ -1755,16 +1927,15 @@ def main():
     group.add_argument('--clean', action='store_true', help='清理所有中间文件和缓存')
     parser.add_argument('--debug', action='store_true', help='显示调试日志')
     
-    args = parser.parse_args()
-    
     try:
-        transcriber = YouTubeTranscriber()
+        args = parser.parse_args()
         
-        if args.debug:
-            transcriber.logger.setLevel(logging.DEBUG)
-            
+        # 创建转录器实例时传入debug参数
+        transcriber = YouTubeTranscriber()
+        transcriber.setup_logging(debug=args.debug)
+        
         if args.clean:
-            transcriber.clean_resources()  # 不需要传入audio_path参数
+            transcriber.clean_resources()
             transcriber.logger.info("清理完成")
         elif args.url:
             transcriber.process_video(args.url)
@@ -1774,6 +1945,10 @@ def main():
             for url in urls:
                 transcriber.process_video(url)
                 
+    except SystemExit:
+        print("提示: 请提供必要的参数")
+        parser.print_help()
+        sys.exit(0)
     except KeyboardInterrupt:
         print("\n用户中断")
         sys.exit(1)
@@ -1782,6 +1957,9 @@ def main():
         if args.debug:
             traceback.print_exc()
         sys.exit(1)
+    finally:
+        # 程序结束前再次清理
+        transcriber.clean_resources()
 
 if __name__ == '__main__':
     main() 
