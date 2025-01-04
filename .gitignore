@@ -37,3 +37,6 @@ outputs/
 *.wav
 transcript*.txt
 audio_*.wav
+
+# History data
+data/
