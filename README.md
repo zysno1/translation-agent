@@ -1,49 +1,26 @@
 # YouTube 视频转录工具
 
-这是一个功能强大的 YouTube 视频转录工具，可以自动下载视频音频、转写为文本、翻译成中文并优化格式。
+这是一个功能强大的 YouTube 视频转录工具，可以自动下载视频、提取音频、进行语音识别，并生成带时间戳的中文文稿。
 
 ## 主要功能
 
-1. **音频处理**
-   - 自动从 YouTube 视频中提取音频
-   - 自动处理音频格式（采样率转换为16kHz，转换为单声道）
-   - 支持断点续传和状态恢复
-
-2. **语音识别**
-   - 使用通义千问 SenseVoice API 进行语音识别
-   - 自动分片处理大型音频文件
-   - 智能去除标签和噪音标记
-
-3. **翻译功能**
-   - 使用通义千问 API 进行英译中翻译
-   - 智能模型降级策略（qwen-plus → qwen-max）
-   - 自动处理内容安全问题
-   - 分批处理长文本
-   - 完整性检查和自动重试
-
-4. **文本优化**
-   - 智能段落划分
-   - 标点符号规范化
-   - 格式美化
-   - 使用 qwen-turbo 模型进行优化
-
-5. **进度监控**
-   - 实时进度显示
-   - 预估剩余时间
-   - 详细的处理步骤日志
-   - Token 使用统计和费用预警
+- 🎥 支持下载任意 YouTube 视频
+- 🔊 自动提取和处理音频
+- 🎯 高精度的语音识别（支持英文和中文）
+- ⏱ 生成带时间戳的转录文本
+- 🔄 英文内容自动翻译为中文
+- 📝 文本智能优化和格式化
+- 🖼 生成带视频截图的 HTML 报告
+- 💾 支持断点续传和进度保存
+- 📊 详细的处理进度和剩余时间显示
+- 📝 Git 版本控制支持
+- 🧹 资源清理功能
 
 ## 环境要求
 
-1. Python 3.8 或更高版本
-2. 必要的环境变量：
-   ```
-   DASHSCOPE_API_KEY=你的通义千问API密钥
-   OSS_ACCESS_KEY=你的阿里云OSS访问密钥
-   OSS_ACCESS_SECRET=你的阿里云OSS访问密钥密文
-   OSS_ENDPOINT=你的OSS终端节点
-   OSS_BUCKET=你的OSS存储桶名称
-   ```
+- Python 3.8 或更高版本
+- FFmpeg（用于音视频处理）
+- Git（用于版本控制）
 
 ## 安装依赖
 
@@ -51,55 +28,72 @@
 pip install -r requirements.txt
 ```
 
+## 环境变量配置
+
+在项目根目录创建 `.env` 文件，配置以下环境变量：
+
+```
+DASHSCOPE_API_KEY=your_api_key
+OSS_ACCESS_KEY=your_oss_access_key
+OSS_ACCESS_SECRET=your_oss_access_secret
+OSS_ENDPOINT=your_oss_endpoint
+OSS_BUCKET=your_oss_bucket
+```
+
 ## 使用方法
 
-1. 设置环境变量（可以创建 `.env` 文件）
-2. 运行程序：
-   ```bash
-   python src/youtube_transcriber.py
-   ```
-3. 输入 YouTube 视频链接，程序会自动完成后续处理
+### 处理单个视频
+- `--url`: 指定单个YouTube视频URL进行处理
+  ```bash
+  python src/youtube_transcriber.py --url "https://www.youtube.com/watch?v=xxxxx"
+  ```
+
+### 批量处理视频
+- `--file`: 指定包含YouTube视频URL列表的文件路径
+  ```bash
+  python src/youtube_transcriber.py --file "urls.txt"
+  ```
+  文件格式要求：
+  - 每行一个URL
+  - 忽略空行
+  - 文本文件编码为UTF-8
+
+### 清理资源
+- `--clean`: 清理所有中间文件和缓存（包括日志、音视频文件和 OSS 资源）
+  ```bash
+  python src/youtube_transcriber.py --clean
+  ```
+  清理范围包括：
+  - `outputs/` 目录下的所有文件（包括状态文件和图片）
+  - `logs/` 目录下的所有日志文件
+  - 临时音频文件（`audio_*.wav`、`*.wav_processed.wav`、`*.wav_chunk_*.wav`）
+  - 临时视频文件（`video_*.mp4`）
+  - OSS 存储中的音频文件
+  - 可选：清理 `transcripts/` 目录（会提示确认）
 
 ## 输出文件
 
-程序会在 `outputs` 目录下生成以下文件：
-- `extract_[timestamp].wav`: 原始提取的音频
-- `process_[timestamp].wav`: 处理后的音频
-- `recognize_[timestamp].txt`: 语音识别结果
-- `translate_[timestamp].txt`: 翻译结果
-- `polish_[timestamp].txt`: 优化后的文本
-- `transcript_[timestamp].txt`: 最终结果
-- `state_[timestamp].json`: 处理状态文件（用于断点续传）
-
-## 费用说明
-
-程序使用以下API服务：
-1. 语音识别 (sensevoice-v1): ¥0.0015/秒
-2. 翻译 (qwen-plus): ¥0.1/1K tokens
-3. 翻译备选 (qwen-max): ¥0.2/1K tokens
-4. 文本优化 (qwen-turbo): ¥0.008/1K tokens
-
-程序会自动统计使用量和费用，并在费用超过预警阈值（默认¥5.0）时发出警告。
-
-## 特性
-
-- **智能分段处理**：自动处理长文本和大型音频文件
-- **错误恢复**：支持断点续传和自动重试
-- **模型降级**：遇到内容安全问题时自动切换到更强大的模型
-- **完整性检查**：确保翻译和处理结果的完整性
-- **详细日志**：提供清晰的处理进度和错误信息
-- **费用控制**：详细的费用统计和预警机制
+- `transcripts/`: 最终的转录文稿（Markdown 格式）
+- `outputs/`: 中间处理文件和状态信息
+- `logs/`: 处理日志文件
 
 ## 注意事项
 
-1. 请确保有足够的磁盘空间存储临时文件
-2. 程序会自动清理临时文件，但建议定期检查 `outputs` 目录
-3. 对于较长的视频，处理时间可能较长，请耐心等待
-4. 如果处理过程中断，可以使用相同的时间戳恢复处理
+1. 确保系统已安装 FFmpeg
+2. 需要稳定的网络连接
+3. 处理大视频时需要足够的磁盘空间
+4. API 调用会产生费用，请注意余额
+5. 批量处理时，如果某个视频处理失败，程序会继续处理下一个视频
 
-## 错误处理
+## 常见问题
 
-- 如果遇到网络错误，程序会自动重试
-- 如果遇到内容安全问题，会自动切换到 qwen-max 模型
-- 如果某个片段处理失败，会保留原文并继续处理其他部分
-- 支持手动中断和恢复处理 
+1. 使用 `--clean` 可以清理所有中间文件和日志
+2. 清理操作会保留当前正在使用的日志文件
+3. 批量处理时的错误会被记录在日志文件中
+
+## 更新日志
+
+### 2024.01
+- 添加了批量处理视频功能
+- 添加了资源清理功能
+- 优化了错误处理和日志记录 
