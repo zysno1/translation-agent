@@ -562,79 +562,98 @@ class YouTubeTranscriber:
             self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
             sys.exit(1)  # 直接退出，不执行后续清理
 
-    def split_text_for_translation(self, text: str, max_chars: int = 2000) -> List[str]:
-        """将文本分段用于翻译
+    def split_text_for_translation(self, text: str, max_tokens: int = 1500) -> List[str]:
+        """将文本分段用于翻译，确保不会切分句子
         
         Args:
             text: 要分段的文本
-            max_chars: 每段最大字符数
+            max_tokens: 每段最大token数（预留空间给系统提示词）
             
         Returns:
             List[str]: 分段后的文本列表
         """
-        segments = []
-        current_segment = []
-        current_length = 0
-        
-        lines = text.split('\n')
-        for line in lines:
-            # 跳过空行
-            if not line.strip():
-                continue
-                
-            # 解析时间戳和文本
-            match = re.match(r'(\[\d{2}:\d{2} - \d{2}:\d{2}\]) (.+)', line)
-            if not match:
-                continue
-                
-            timestamp, content = match.groups()
-            line_length = len(content)
+        try:
+            self.logger.info("开始分段处理文本...")
+            segments = []
+            current_segment = []
+            current_length = 0  # 估算当前token数（按4个字符1个token计算）
             
-            # 如果当前行超过最大长度，需要单独处理
-            if line_length > max_chars:
-                # 先保存当前段落
-                if current_segment:
-                    segments.append('\n'.join(current_segment))
-                    current_segment = []
-                    current_length = 0
-                
-                # 将长行按句子分割
-                sentences = re.split(r'([。！？.!?]+)', content)
-                temp_segment = []
-                temp_length = 0
-                
-                for i in range(0, len(sentences), 2):
-                    sentence = sentences[i]
-                    if i + 1 < len(sentences):
-                        sentence += sentences[i + 1]  # 加回标点符号
-                        
-                    if temp_length + len(sentence) > max_chars and temp_segment:
-                        # 保存当前临时段落
-                        segments.append('\n'.join([timestamp + ' ' + ' '.join(temp_segment)]))
-                        temp_segment = [sentence]
-                        temp_length = len(sentence)
-                    else:
-                        temp_segment.append(sentence)
-                        temp_length += len(sentence)
-                
-                # 保存最后的临时段落
-                if temp_segment:
-                    segments.append('\n'.join([timestamp + ' ' + ' '.join(temp_segment)]))
+            # 按行分割文本
+            lines = text.split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
                     
-            # 如果添加当前行会超过最大长度，先保存当前段落
-            elif current_length + line_length > max_chars and current_segment:
+                # 解析时间戳和文本
+                match = re.match(r'(\[\d{2}:\d{2} - \d{2}:\d{2}\]) (.+)', line)
+                if not match:
+                    continue
+                    
+                timestamp, content = match.groups()
+                # 估算当前行的token数（每4个字符约1个token）
+                line_tokens = len(content) // 4 + 1  # +1 是时间戳的估算token数
+                
+                # 如果当前行超过最大token限制，需要单独处理
+                if line_tokens > max_tokens:
+                    # 先保存当前段落
+                    if current_segment:
+                        segments.append('\n'.join(current_segment))
+                        current_segment = []
+                        current_length = 0
+                    
+                    # 将长句按句号、问号、感叹号分割
+                    sentences = re.split(r'([。！？.!?]+)', content)
+                    temp_segment = []
+                    temp_length = 0
+                    
+                    for i in range(0, len(sentences), 2):
+                        sentence = sentences[i]
+                        if i + 1 < len(sentences):
+                            sentence += sentences[i + 1]  # 加回标点符号
+                            
+                        sentence_tokens = len(sentence) // 4
+                        if temp_length + sentence_tokens > max_tokens and temp_segment:
+                            # 保存当前临时段落
+                            segments.append('\n'.join([timestamp + ' ' + ' '.join(temp_segment)]))
+                            temp_segment = [sentence]
+                            temp_length = sentence_tokens
+                        else:
+                            temp_segment.append(sentence)
+                            temp_length += sentence_tokens
+                    
+                    # 保存最后的临时段落
+                    if temp_segment:
+                        segments.append('\n'.join([timestamp + ' ' + ' '.join(temp_segment)]))
+                        
+                # 如果添加当前行会超过最大token限制，先保存当前段落
+                elif current_length + line_tokens > max_tokens and current_segment:
+                    segments.append('\n'.join(current_segment))
+                    current_segment = [line]
+                    current_length = line_tokens
+                else:
+                    current_segment.append(line)
+                    current_length += line_tokens
+            
+            # 保存最后一个段落
+            if current_segment:
                 segments.append('\n'.join(current_segment))
-                current_segment = [line]
-                current_length = line_length
-            else:
-                current_segment.append(line)
-                current_length += line_length
-        
-        # 保存最后一个段落
-        if current_segment:
-            segments.append('\n'.join(current_segment))
-        
-        return segments
+            
+            # 记录分段信息
+            self.logger.info(f"文本分段完成:")
+            self.logger.info(f"- 总段数: {len(segments)}")
+            for i, segment in enumerate(segments, 1):
+                token_count = len(segment) // 4
+                self.logger.debug(f"- 第{i}段: {token_count} tokens (约)")
+            
+            return segments
+            
+        except Exception as e:
+            self.logger.error(f"分段处理文本时出错: {str(e)}")
+            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
+            # 出错时返回原文本作为单个段落
+            return [text]
 
     @retry_on_timeout(max_retries=3, base_delay=1)
     def translate_text(self, text: str) -> str:
@@ -1999,12 +2018,29 @@ def main():
     """主函数"""
     transcriber = None
     try:
-        parser = argparse.ArgumentParser(description='YouTube视频转录工具')
+        parser = argparse.ArgumentParser(
+            description='YouTube视频转录工具 - 支持视频转录、翻译和字幕生成',
+            formatter_class=argparse.RawTextHelpFormatter
+        )
         group = parser.add_mutually_exclusive_group(required=True)
-        group.add_argument('--url', help='YouTube视频URL')
-        group.add_argument('--file', help='包含YouTube视频URL列表的文件路径')
+        group.add_argument('--url', help='单个YouTube视频的URL')
+        group.add_argument('--file', help='包含多个YouTube视频URL的文件路径，每行一个URL')
         group.add_argument('--clean', action='store_true', help='清理所有中间文件和缓存')
-        parser.add_argument('--debug', action='store_true', help='显示调试日志')
+        parser.add_argument('--debug', action='store_true', help='启用调试模式，显示详细日志')
+        
+        # 如果没有参数，打印使用说明
+        if len(sys.argv) == 1:
+            parser.print_help()
+            print("\n示例用法:")
+            print("  处理单个视频:")
+            print("    python youtube_transcriber.py --url https://www.youtube.com/watch?v=xxxxx")
+            print("  处理多个视频:")
+            print("    python youtube_transcriber.py --file video_urls.txt")
+            print("  清理缓存:")
+            print("    python youtube_transcriber.py --clean")
+            print("  调试模式:")
+            print("    python youtube_transcriber.py --url https://www.youtube.com/watch?v=xxxxx --debug")
+            sys.exit(0)
         
         args = parser.parse_args()
         
@@ -2018,16 +2054,18 @@ def main():
         elif args.file:
             process_url_list(transcriber, args.file)
                     
+    except KeyboardInterrupt:
+        print("\n程序被用户中断")
+        sys.exit(0)
     except SystemExit:
-        # 捕获 sys.exit() 调用，直接退出，不显示用法信息
-        raise
+        # 正常退出
+        sys.exit(0)
     except Exception as e:
         if transcriber and transcriber.logger:
             transcriber.logger.error(f"程序执行出错: {str(e)}")
             if args and args.debug:
                 transcriber.logger.error(f"错误堆栈:\n{traceback.format_exc()}")
         else:
-            # 如果日志系统还未初始化，则打印到控制台
             print(f"错误: {str(e)}")
             if 'args' in locals() and args.debug:
                 print(f"错误堆栈:\n{traceback.format_exc()}")
