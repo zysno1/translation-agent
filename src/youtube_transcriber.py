@@ -324,8 +324,11 @@ class YouTubeTranscriber:
         'qwen-max': 0.2  # 通义千问-Max 模型价格
     }
 
-    def __init__(self):
-        """初始化转写器"""
+    def __init__(self, debug: bool = False):
+        """初始化转写器
+        Args:
+            debug: 是否启用调试模式
+        """
         # 重新加载环境变量，确保使用最新的配置
         load_dotenv(override=True)
         
@@ -348,7 +351,7 @@ class YouTubeTranscriber:
         }
             
         # 设置日志记录器
-        self.setup_logging()
+        self.setup_logging(debug)
         
         # 初始化其他配置...
         self.temp_files = []
@@ -397,15 +400,7 @@ class YouTubeTranscriber:
         # 返回完整路径
         return os.path.join(dir_path, filename)
         
-    def process_video(self, url: str) -> Dict:
-        """处理YouTube视频
-        
-        Args:
-            url: YouTube视频URL
-            
-        Returns:
-            Dict: 处理结果
-        """
+    def process_video(self, url: str) -> None:
         try:
             self.logger.info("开始新的视频处理任务...")
             self.logger.info(f"工作目录: {os.getcwd()}")
@@ -497,9 +492,9 @@ class YouTubeTranscriber:
                 # 翻译文本
                 self.logger.info("开始文本翻译流程...")
                 translated_text = self.translate_text(original_text)
-                if not translated_text or translated_text == original_text:
+                if not translated_text:
                     self.logger.error("文本翻译失败，程序退出")
-                    sys.exit(1)  # 翻译失败时直接退出
+                    sys.exit(1)  # 直接退出，不执行后续清理
                 
                 # 保存最终文本
                 final_path = os.path.join(self.DIRS['transcripts'], final_filename)
@@ -570,10 +565,8 @@ class YouTubeTranscriber:
             
         except Exception as e:
             self.logger.error(f"处理视频时出错: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
+            sys.exit(1)  # 直接退出，不执行后续清理
 
     def split_text_for_translation(self, text: str, max_chars: int = 2000) -> List[str]:
         """将文本分段用于翻译
@@ -1525,8 +1518,7 @@ class YouTubeTranscriber:
         1. temp目录下的临时文件
         2. output目录下的输出文件
         3. OSS上的临时文件
-        
-        注意：logs目录下的日志文件会被保留
+        4. logs目录下的历史日志文件（保留当前执行的日志文件）
         """
         try:
             if audio_path:
@@ -1538,7 +1530,8 @@ class YouTubeTranscriber:
                 # 清理本地目录
                 dirs_to_clean = {
                     'temp': '临时文件',
-                    'output': '输出文件'  # 移除了 'logs' 目录
+                    'output': '输出文件',
+                    'logs': '日志文件'
                 }
                 
                 for dir_name, file_type in dirs_to_clean.items():
@@ -1550,17 +1543,31 @@ class YouTubeTranscriber:
                                 for name in files:
                                     file_path = os.path.join(root, name)
                                     try:
+                                        # 对于日志目录，跳过当前正在使用的日志文件
+                                        if dir_name == 'logs':
+                                            # 获取当前日志文件的处理器路径
+                                            current_log_files = []
+                                            for handler in self.logger.handlers:
+                                                if isinstance(handler, logging.FileHandler):
+                                                    current_log_files.append(os.path.abspath(handler.baseFilename))
+                                            
+                                            # 如果是当前正在使用的日志文件，则跳过
+                                            if os.path.abspath(file_path) in current_log_files:
+                                                self.logger.debug(f"保留当前日志文件: {file_path}")
+                                                continue
+                                        
                                         os.remove(file_path)
                                         self.logger.info(f"已删除{file_type}: {file_path}")
                                     except Exception as e:
                                         self.logger.warning(f"删除{file_type}失败: {file_path} ({str(e)})")
                                         
-                            # 尝试删除空目录
-                            try:
-                                os.rmdir(dir_path)
-                                self.logger.info(f"已删除空目录: {dir_path}")
-                            except OSError:
-                                pass  # 目录不为空或其他原因无法删除，忽略错误
+                            # 尝试删除空目录（对于logs目录不删除）
+                            if dir_name != 'logs':
+                                try:
+                                    os.rmdir(dir_path)
+                                    self.logger.info(f"已删除空目录: {dir_path}")
+                                except OSError:
+                                    pass  # 目录不为空或其他原因无法删除，忽略错误
                                     
                         except Exception as e:
                             self.logger.error(f"清理{file_type}目录失败: {dir_path} ({str(e)})")
@@ -1919,47 +1926,45 @@ def process_url_list(transcriber, url_file: str):
         transcriber.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
 
 def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(description='YouTube视频转录工具')
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--url', help='YouTube视频URL')
-    group.add_argument('--file', help='包含YouTube视频URL列表的文件路径')
-    group.add_argument('--clean', action='store_true', help='清理所有中间文件和缓存')
-    parser.add_argument('--debug', action='store_true', help='显示调试日志')
-    
     try:
+        parser = argparse.ArgumentParser(description='YouTube视频转录工具')
+        group = parser.add_mutually_exclusive_group(required=True)
+        group.add_argument('--url', help='YouTube视频URL')
+        group.add_argument('--file', help='包含YouTube视频URL列表的文件路径')
+        group.add_argument('--clean', action='store_true', help='清理所有中间文件和缓存')
+        parser.add_argument('--debug', action='store_true', help='显示调试日志')
+        
         args = parser.parse_args()
         
-        # 创建转录器实例时传入debug参数
-        transcriber = YouTubeTranscriber()
-        transcriber.setup_logging(debug=args.debug)
+        transcriber = YouTubeTranscriber(debug=args.debug)
         
         if args.clean:
             transcriber.clean_resources()
-            transcriber.logger.info("清理完成")
         elif args.url:
             transcriber.process_video(args.url)
         elif args.file:
-            with open(args.file) as f:
-                urls = [line.strip() for line in f if line.strip()]
+            with open(args.file, 'r') as f:
+                urls = f.readlines()
             for url in urls:
-                transcriber.process_video(url)
-                
+                url = url.strip()
+                if url:
+                    transcriber.process_video(url)
+                    
     except SystemExit:
-        print("提示: 请提供必要的参数")
-        parser.print_help()
-        sys.exit(0)
-    except KeyboardInterrupt:
-        print("\n用户中断")
-        sys.exit(1)
+        # 捕获 sys.exit() 调用，直接退出，不显示用法信息
+        raise
     except Exception as e:
-        print(f"\n错误: {str(e)}")
+        # 创建一个临时的日志记录器用于错误报告
+        error_logger = logging.getLogger('error')
+        error_logger.setLevel(logging.ERROR)
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
+        error_logger.addHandler(handler)
+        
+        error_logger.error(f"程序执行出错: {str(e)}")
         if args.debug:
-            traceback.print_exc()
+            error_logger.error(f"错误堆栈:\n{traceback.format_exc()}")
         sys.exit(1)
-    finally:
-        # 程序结束前再次清理
-        transcriber.clean_resources()
 
 if __name__ == '__main__':
     main() 
