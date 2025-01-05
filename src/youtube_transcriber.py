@@ -25,8 +25,6 @@ from typing import Optional, Dict, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import DIR_CONFIG, MODEL_CONFIG, OSS_CONFIG, PROMPT_CONFIG
 from functools import wraps
-from decorators import log_service_call
-from log_formatter import ServiceFormatter  # 导入自定义格式化器
 import ffmpeg
 
 # 添加当前目录到 Python 路径
@@ -37,6 +35,120 @@ if parent_dir not in sys.path:
 
 # 加载 .env 文件
 load_dotenv()
+
+class ServiceFormatter(logging.Formatter):
+    """服务日志格式化器，用于格式化API调用日志"""
+    
+    def __init__(self, fmt=None, datefmt=None):
+        """初始化格式化器
+        
+        Args:
+            fmt: 日志格式字符串
+            datefmt: 日期格式字符串
+        """
+        super().__init__(fmt, datefmt)
+        # 定义可选字段及其默认值
+        self.optional_fields = {
+            'service': '',
+            'request_id': '',
+            'duration': 0,
+            'status': '',
+            'parameters': {},
+            'response': {}
+        }
+    
+    def format(self, record):
+        """格式化日志记录
+        
+        Args:
+            record: 日志记录对象
+            
+        Returns:
+            str: 格式化后的日志字符串
+        """
+        # 为所有可选字段设置默认值
+        for field, default in self.optional_fields.items():
+            if not hasattr(record, field):
+                setattr(record, field, default)
+        
+        # 确保 parameters 和 response 是字符串
+        if hasattr(record, 'parameters'):
+            if isinstance(record.parameters, dict):
+                record.parameters = json.dumps(record.parameters, ensure_ascii=False)
+        
+        if hasattr(record, 'response'):
+            if isinstance(record.response, dict):
+                record.response = json.dumps(record.response, ensure_ascii=False)
+        
+        # 调用父类的 format 方法
+        return super().format(record)
+
+def log_service_call(service: str, api: str):
+    """服务调用日志装饰器
+    
+    Args:
+        service: 服务名称 ('ASR', 'Translate', 'OSS')
+        api: API名称
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # 获取 logger 实例（假设第一个参数是 self）
+            self = args[0]
+            request_id = str(uuid.uuid4())
+            start_time = time.time()
+            
+            try:
+                # 记录请求信息
+                self.logger.info(
+                    f"调用 {service} API: {api}",
+                    extra={
+                        'service': service,
+                        'request_id': request_id,
+                        'parameters': kwargs
+                    }
+                )
+                
+                # 执行API调用
+                result = func(*args, **kwargs)
+                
+                # 计算耗时
+                duration = (time.time() - start_time) * 1000
+                
+                # 记录成功响应
+                self.logger.info(
+                    f"{service} API 调用成功: {api}",
+                    extra={
+                        'service': service,
+                        'request_id': request_id,
+                        'duration': duration,
+                        'status': 'success',
+                        'response': result
+                    }
+                )
+                
+                return result
+                
+            except Exception as e:
+                # 计算耗时
+                duration = (time.time() - start_time) * 1000
+                
+                # 记录错误信息
+                self.logger.error(
+                    f"{service} API 调用失败: {api} - {str(e)}",
+                    extra={
+                        'service': service,
+                        'request_id': request_id,
+                        'duration': duration,
+                        'status': 'error',
+                        'error': str(e),
+                        'stack_trace': traceback.format_exc()
+                    }
+                )
+                raise
+                
+        return wrapper
+    return decorator
 
 def retry_on_timeout(max_retries=3, base_delay=1):
     """处理API调用超时的重试装饰器
@@ -2119,61 +2231,6 @@ class YouTubeTranscriber:
             error_msg = "缺少必要的环境变量:\n" + "\n".join(f"- {var}" for var in missing_vars)
             self.logger.error(error_msg)
             raise ValueError(error_msg)
-
-    def log_service_call(self, service: str, api: str, parameters: dict = None):
-        """记录服务调用的装饰器
-        
-        Args:
-            service: 服务名称 ('ASR', 'Translate', 'OSS')
-            api: API名称
-            parameters: API参数
-        """
-        def decorator(func):
-            @wraps(func)
-            def wrapper(*args, **kwargs):
-                request_id = str(uuid.uuid4())
-                start_time = time.time()
-                
-                try:
-                    # 执行API调用
-                    result = func(*args, **kwargs)
-                    
-                    # 计算耗时
-                    duration = (time.time() - start_time) * 1000
-                    
-                    # 记录成功响应
-                    self.logger.info(
-                        f"{service} - {api} 调用成功",
-                        extra={
-                            'service': service,
-                            'request_id': request_id,
-                            'api': api,
-                            'duration': duration,
-                            'status': 'success'
-                        }
-                    )
-                    
-                    return result
-                    
-                except Exception as e:
-                    # 计算耗时
-                    duration = (time.time() - start_time) * 1000
-                    
-                    # 记录错误信息
-                    self.logger.error(
-                        f"{service} - {api} 调用失败: {str(e)}",
-                        extra={
-                            'service': service,
-                            'request_id': request_id,
-                            'api': api,
-                            'duration': duration,
-                            'status': 'error'
-                        }
-                    )
-                    raise
-                    
-            return wrapper
-        return decorator
 
     def save_original_text(self, text: str, video_id: str) -> str:
         """保存原始转写文本。
