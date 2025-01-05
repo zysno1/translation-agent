@@ -1730,7 +1730,7 @@ class YouTubeTranscriber:
         config[keys[-1]] = value
         
     def download_video(self, url: str) -> Tuple[str, str, str]:
-        """下载YouTube视频。
+        """下载视频并提取音频。
         
         Args:
             url: YouTube视频URL
@@ -1774,6 +1774,10 @@ class YouTubeTranscriber:
                 video_title = info.get('title', video_id)
                 if not video_title:
                     video_title = video_id
+                    
+                # 保存视频信息供后续使用
+                self.current_video_title = video_title
+                self.current_video_duration = info.get('duration', 0)
             
             # 获取实际的输出文件路径
             audio_path = output_template + '.mp3'
@@ -1786,17 +1790,16 @@ class YouTubeTranscriber:
                 raise Exception(f"下载的文件大小为0: {audio_path}")
             
             # 记录临时文件
-            self.temp_files.append(audio_path)
+            self.track_temp_file(audio_path)
             
             end_time = time.time()
-            duration = end_time - start_time
-            self.logger.info(f"音频下载完成，耗时 {duration:.2f} 秒")
+            self.logger.info(f"视频下载完成，耗时 {end_time - start_time:.2f} 秒")
             self.logger.info(f"- 视频标题: {video_title}")
+            self.logger.info(f"- 视频ID: {video_id}")
+            if self.current_video_duration:
+                self.logger.info(f"- 视频时长: {self.format_duration(self.current_video_duration)}")
+            self.logger.info(f"- 音频文件: {audio_path}")
             self.logger.info(f"- 文件大小: {os.path.getsize(audio_path) / (1024*1024):.2f}MB")
-            
-            # 如果下载时间过长，记录警告
-            if duration > 300:  # 5分钟
-                self.logger.warning(f"下载耗时较长 ({duration:.2f}秒)，可能需要检查网络状况")
             
             return video_id, video_title, audio_path
             
@@ -1804,7 +1807,7 @@ class YouTubeTranscriber:
             self.logger.error(f"下载视频时出错: {str(e)}")
             self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
             raise
-            
+
     def extract_audio(self, audio_path: str, video_id: str) -> str:
         """从MP3文件中提取WAV格式音频。
         
@@ -2245,12 +2248,31 @@ class YouTubeTranscriber:
         try:
             # 生成文件名
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"{timestamp}_{video_id}_original.md"
+            video_title = self.current_video_title if hasattr(self, 'current_video_title') else video_id
+            filename = f"{timestamp}_{video_title}_original.md"
             file_path = os.path.join(self.dirs['transcripts'], filename)
+            
+            # 构建文件内容
+            content = []
+            
+            # 添加元数据
+            content.append("---")
+            content.append("视频信息:")
+            content.append(f"  标题: {video_title}")
+            content.append(f"  ID: {video_id}")
+            if hasattr(self, 'current_video_duration'):
+                content.append(f"  时长: {self.format_duration(self.current_video_duration)}")
+            content.append(f"  语言: English -> Chinese")
+            content.append(f"  处理时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            content.append("---\n")
+            
+            # 添加内容
+            content.append("## 内容时间轴\n")
+            content.extend(text.split('\n'))
             
             # 保存文件
             with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(text)
+                f.write('\n'.join(content))
                 
             self.logger.info(f"原始转写文本已保存: {filename}")
             self.logger.info(f"- 文件大小: {os.path.getsize(file_path) / 1024:.2f}KB")
@@ -2275,12 +2297,31 @@ class YouTubeTranscriber:
         try:
             # 生成文件名
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"{timestamp}_{video_id}_translated.md"
+            video_title = self.current_video_title if hasattr(self, 'current_video_title') else video_id
+            filename = f"{timestamp}_{video_title}_translated.md"
             file_path = os.path.join(self.dirs['transcripts'], filename)
+            
+            # 构建文件内容
+            content = []
+            
+            # 添加元数据
+            content.append("---")
+            content.append("视频信息:")
+            content.append(f"  标题: {video_title}")
+            content.append(f"  ID: {video_id}")
+            if hasattr(self, 'current_video_duration'):
+                content.append(f"  时长: {self.format_duration(self.current_video_duration)}")
+            content.append(f"  语言: English -> Chinese")
+            content.append(f"  处理时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            content.append("---\n")
+            
+            # 添加内容
+            content.append("## 内容时间轴\n")
+            content.extend(text.split('\n'))
             
             # 保存文件
             with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(text)
+                f.write('\n'.join(content))
                 
             self.logger.info(f"翻译文本已保存: {filename}")
             self.logger.info(f"- 文件大小: {os.path.getsize(file_path) / 1024:.2f}KB")
@@ -2291,7 +2332,25 @@ class YouTubeTranscriber:
             self.logger.error(f"保存翻译文本时出错: {str(e)}")
             self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
             raise
-
+            
+    def format_duration(self, seconds: float) -> str:
+        """格式化视频时长。
+        
+        Args:
+            seconds: 秒数
+            
+        Returns:
+            str: 格式化后的时长字符串 (HH:MM:SS)
+        """
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        seconds = int(seconds % 60)
+        
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        else:
+            return f"{minutes:02d}:{seconds:02d}"
+            
     def format_segments(self, segments: List[Tuple[str, float, float]]) -> str:
         """格式化文本片段。
         
@@ -2309,10 +2368,10 @@ class YouTubeTranscriber:
                 start_str = time.strftime('%M:%S', time.gmtime(start_time))
                 end_str = time.strftime('%M:%S', time.gmtime(end_time))
                 
-                # 添加格式化的行
-                formatted_text.append(f"[{start_str} - {end_str}] {text}")
+                # 添加带时间戳的文本，确保每段都有换行
+                formatted_text.append(f"[{start_str} - {end_str}] {text.strip()}\n")
             
-            return '\n'.join(formatted_text)
+            return ''.join(formatted_text)
             
         except Exception as e:
             self.logger.error(f"格式化文本片段时出错: {str(e)}")
