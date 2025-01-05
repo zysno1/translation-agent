@@ -22,9 +22,12 @@ import logging
 from datetime import datetime
 import traceback
 from typing import Optional, Dict, List, Tuple
-from pytube import YouTube
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import DIR_CONFIG, MODEL_CONFIG, OSS_CONFIG, PROMPT_CONFIG
+from functools import wraps
+from decorators import log_service_call
+from log_formatter import ServiceFormatter  # 导入自定义格式化器
+import ffmpeg
 
 # 添加当前目录到 Python 路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -341,6 +344,9 @@ class YouTubeTranscriber:
         for dir_name, dir_path in self.dirs.items():
             os.makedirs(dir_path, exist_ok=True)
             
+        # 设置临时目录
+        self.temp_dir = self.dirs['temp']
+        
         # 设置日志记录器
         self.setup_logging(debug)
         
@@ -395,174 +401,105 @@ class YouTubeTranscriber:
         return os.path.join(dir_path, filename)
         
     def process_video(self, url: str) -> None:
+        """处理视频
+        Args:
+            url: YouTube视频URL
+        """
+        total_start_time = time.time()
+        self.logger.info("开始处理视频...")
+        
         try:
-            self.logger.info("开始新的视频处理任务...")
-            self.logger.info(f"工作目录: {os.getcwd()}")
+            # 下载视频
+            download_start = time.time()
+            video_id, video_title, video_path = self.download_video(url)
+            download_duration = time.time() - download_start
             
-            # 提取视频ID
-            video_id = extract_video_id(url)
-            if not video_id:
-                raise ValueError("无效的YouTube URL")
-                
-            # 获取视频标题和信息
-            try:
-                with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    video_title = info.get('title', video_id)
-                    duration = info.get('duration', 0)
-                    
-                self.logger.info(f"视频信息获取成功:")
-                self.logger.info(f"- 标题: {video_title}")
-                self.logger.info(f"- ID: {video_id}")
-                self.logger.info(f"- URL: {url}")
-                self.logger.info(f"- 时长: {duration} 秒")
-                
-                # 预估处理时间
-                time_estimates = self.estimate_processing_time(duration)
-                self.logger.info("处理时间预估:")
-                self.logger.info(f"- 视频下载: {self.format_time(time_estimates['download'])}")
-                self.logger.info(f"- 音频处理: {self.format_time(time_estimates['audio_process'])}")
-                self.logger.info(f"- 文件上传: {self.format_time(time_estimates['upload'])}")
-                self.logger.info(f"- 语音识别: {self.format_time(time_estimates['recognition'])}")
-                self.logger.info(f"- 文本翻译: {self.format_time(time_estimates['translation'])}")
-                self.logger.info(f"- 预计总时间: {self.format_time(time_estimates['total'])}")
-                
-            except Exception as e:
-                self.logger.error(f"获取视频信息失败: {str(e)}")
-                video_title = video_id
-                
-            # 下载音频
-            audio_path = self.get_file_path('audio', video_id=video_id)
-            self.download_audio(url, audio_path)
+            # 提取音频
+            extract_start = time.time()
+            audio_path = self.extract_audio(video_path, video_id)
+            extract_duration = time.time() - extract_start
             
-            try:
-                # 提取音频并转换格式
-                self.logger.info("开始音频处理...")
-                processed_audio_path = self.extract_audio(audio_path, video_id)
-                if not processed_audio_path:
-                    raise Exception("音频处理失败")
-                
-                # 上传音频到OSS
-                file_url = self.upload_to_oss(processed_audio_path)
-                self.logger.info("音频文件上传完成")
-                
-                # 语音识别
-                self.logger.info("开始语音识别流程...")
-                results = self.recognize_speech(processed_audio_path, file_url)
-                if not results:
-                    self.logger.error("语音识别失败，程序退出")
-                    sys.exit(1)  # 语音识别失败时直接退出
-                    
-                # 提取文本
-                self.logger.info("开始提取识别文本...")
-                text_segments = self.extract_text_from_result(results)
-                if not text_segments:
-                    self.logger.error("文本提取失败，程序退出")
-                    sys.exit(1)  # 文本提取失败时直接退出
-                    
-                # 记录文本统计信息
-                total_words = sum(len(text.split()) for text, _, _ in text_segments)
-                total_duration = sum(end - start for _, start, end in text_segments)
-                self.logger.info(f"文本提取完成:")
-                self.logger.info(f"- 总字数: {total_words}")
-                self.logger.info(f"- 总时长: {self.format_time(total_duration)}")
-                self.logger.info(f"- 段落数: {len(text_segments)}")
-                
-                # 生成安全的文件名
-                safe_title = re.sub(r'[<>:"/\\|?*]', '_', video_title)
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                original_filename = f"{timestamp}_{safe_title}_original.md"
-                final_filename = f"{timestamp}_{safe_title}_final.md"
-                
-                # 保存原始文本
-                original_path = os.path.join(self.dirs['transcripts'], original_filename)
-                self.logger.info(f"保存原始转写文本...")
-                self.save_text(text_segments, original_path, video_id=video_id, video_url=url, video_title=video_title)
-                
-                # 构建原始文本用于翻译
-                self.logger.info("准备文本翻译...")
-                original_text = self.format_text_for_translation(text_segments)
-                
-                # 翻译文本
-                self.logger.info("开始文本翻译流程...")
-                translated_text = self.translate_text(original_text)
-                if not translated_text:
-                    self.logger.error("文本翻译失败，程序退出")
-                    sys.exit(1)  # 直接退出，不执行后续清理
-                
-                # 保存最终文本
-                final_path = os.path.join(self.dirs['transcripts'], final_filename)
-                self.logger.info("保存最终翻译文本...")
-                self.save_final_text(final_path, translated_text, video_id, url, video_title)
-                
-                # 提交到Git仓库
-                try:
-                    if os.path.exists('.git'):
-                        self.logger.info("提交文件到Git仓库...")
-                        
-                        # 检查Git状态
-                        status = subprocess.run(['git', 'status', '--porcelain'], 
-                            check=True, capture_output=True, text=True)
-                        
-                        if status.stdout.strip():
-                            # 添加文件到Git
-                            self.logger.info("添加文件到暂存区...")
-                            subprocess.run(['git', 'add', original_path, final_path], check=True)
-                            
-                            # 提交更改
-                            commit_message = f"添加转录文稿: {video_title}\n\n- 原始文本: {original_filename}\n- 最终文本: {final_filename}"
-                            self.logger.info("提交更改...")
-                            result = subprocess.run(
-                                ['git', 'commit', '-m', commit_message], 
-                                check=True, 
-                                capture_output=True, 
-                                text=True
-                            )
-                            commit_hash = result.stdout.split()[1] if result.stdout else "unknown"
-                            
-                            # 推送到远程仓库
-                            self.logger.info("推送到远程仓库...")
-                            push_result = subprocess.run(
-                                ['git', 'push', 'origin', 'master'],  # 使用 master 分支
-                                check=True,
-                                capture_output=True,
-                                text=True
-                            )
-                            
-                            self.logger.info(f"Git操作完成:")
-                            self.logger.info(f"- Commit Hash: {commit_hash}")
-                            self.logger.info(f"- 提交消息: {commit_message}")
-                            self.logger.info("- 已成功推送到远程仓库")
-                        else:
-                            self.logger.info("没有需要提交的更改")
-                        
-                except subprocess.CalledProcessError as e:
-                    self.logger.error(f"Git操作失败: {str(e)}")
-                    self.logger.error(f"错误输出: {e.stderr if hasattr(e, 'stderr') else '无'}")
-                except Exception as e:
-                    self.logger.error(f"Git操作失败: {str(e)}")
-                    self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
-                
-                self.logger.info("视频处理任务完成")
-                return {
-                    "success": True,
-                    "video_id": video_id,
-                    "video_title": video_title,
-                    "original_path": original_path,
-                    "final_path": final_path
-                }
-                
-            finally:
-                # 清理临时文件
-                self.clean_resources(audio_path)
-                self.logger.info("临时文件清理完成")
+            # 上传音频
+            upload_start = time.time()
+            file_url = self.upload_audio(audio_path)
+            upload_duration = time.time() - upload_start
             
+            # 语音识别
+            asr_start = time.time()
+            result = self.recognize_speech(audio_path, file_url)
+            if not result:
+                raise Exception("语音识别失败")
+            asr_duration = time.time() - asr_start
+            
+            # 提取文本
+            extract_text_start = time.time()
+            segments = self.extract_text_from_result(result)
+            if not segments:
+                raise Exception("未能提取到任何文本")
+            extract_text_duration = time.time() - extract_text_start
+            
+            # 格式化文本
+            format_start = time.time()
+            original_text = self.format_segments(segments)
+            if not original_text:
+                raise Exception("文本格式化失败")
+            format_duration = time.time() - format_start
+            
+            # 保存原始文本
+            save_original_start = time.time()
+            original_path = self.save_original_text(original_text, video_id)
+            save_original_duration = time.time() - save_original_start
+            
+            # 翻译文本
+            translation_start = time.time()
+            translated_text = self.translate_text(original_text)
+            if not translated_text:
+                raise Exception("文本翻译失败")
+            translation_duration = time.time() - translation_start
+            
+            # 保存翻译文本
+            save_translation_start = time.time()
+            final_path = self.save_translated_text(translated_text, video_id)
+            save_translation_duration = time.time() - save_translation_start
+            
+            # 清理资源
+            cleanup_start = time.time()
+            self.clean_resources(audio_path)
+            cleanup_duration = time.time() - cleanup_start
+            
+            # 计算总耗时
+            total_end_time = time.time()
+            total_duration = total_end_time - total_start_time
+            
+            # 输出总体耗时报告
+            self.logger.info("\n处理完成，总体耗时统计：")
+            self.logger.info(f"总耗时: {total_duration:.2f} 秒")
+            self.logger.info("各阶段耗时:")
+            self.logger.info(f"• 视频下载: {download_duration:.2f} 秒")
+            self.logger.info(f"• 音频提取: {extract_duration:.2f} 秒")
+            self.logger.info(f"• 音频上传: {upload_duration:.2f} 秒")
+            self.logger.info(f"• 语音识别: {asr_duration:.2f} 秒")
+            self.logger.info(f"• 文本提取: {extract_text_duration:.2f} 秒")
+            self.logger.info(f"• 文本格式化: {format_duration:.2f} 秒")
+            self.logger.info(f"• 保存原始文本: {save_original_duration:.2f} 秒")
+            self.logger.info(f"• 文本翻译: {translation_duration:.2f} 秒")
+            self.logger.info(f"• 保存翻译文本: {save_translation_duration:.2f} 秒")
+            self.logger.info(f"• 资源清理: {cleanup_duration:.2f} 秒")
+            
+            return {
+                "success": True,
+                "video_id": video_id,
+                "video_title": video_title,
+                "original_path": original_path,
+                "final_path": final_path
+            }
+                
         except Exception as e:
             self.logger.error(f"处理视频时出错: {str(e)}")
             self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
             sys.exit(1)  # 直接退出，不执行后续清理
 
-    def split_text_for_translation(self, text: str, max_tokens: int = 1500) -> List[str]:
+    def split_text_for_translation(self, text: str, max_tokens: int = 800) -> List[str]:
         """将文本分段用于翻译，确保不会切分句子
         
         Args:
@@ -573,6 +510,7 @@ class YouTubeTranscriber:
             List[str]: 分段后的文本列表
         """
         try:
+            start_time = time.time()
             self.logger.info("开始分段处理文本...")
             segments = []
             current_segment = []
@@ -639,6 +577,9 @@ class YouTubeTranscriber:
             # 保存最后一个段落
             if current_segment:
                 segments.append('\n'.join(current_segment))
+                
+            end_time = time.time()
+            self.logger.info(f"文本分段完成，共 {len(segments)} 个片段，耗时 {end_time - start_time:.2f} 秒")
             
             # 记录分段信息
             self.logger.info(f"文本分段完成:")
@@ -656,6 +597,210 @@ class YouTubeTranscriber:
             return [text]
 
     @retry_on_timeout(max_retries=3, base_delay=1)
+    @log_service_call(service='ASR', api='recognize_speech')
+    def recognize_speech(self, audio_path: str, file_url: str) -> Optional[Dict]:
+        """识别音频文件中的语音。
+        
+        Args:
+            audio_path (str): 音频文件路径
+            file_url (str): 已上传到OSS的文件URL
+            
+        Returns:
+            Optional[Dict]: 识别结果
+        """
+        try:
+            request_id = str(uuid.uuid4())
+            # 获取模型配置
+            model_config = MODEL_CONFIG['speech_recognition']
+            model_specific_config = model_config['available_models'][self.asr_model]
+            price_per_second = model_specific_config['price_per_second']
+
+            # 显示模型信息
+            self.logger.info(
+                f"使用语音识别模型: {self.asr_model}",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id
+                }
+            )
+            self.logger.info(
+                f"- 价格: ¥{price_per_second}/秒",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id
+                }
+            )
+            
+            # 计算音频文件大小和时长
+            file_size = os.path.getsize(audio_path) / (1024 * 1024)  # 转换为MB
+            audio = AudioSegment.from_file(audio_path)
+            duration = len(audio) / 1000  # 转换为秒
+            
+            # 记录音频文件信息
+            self.logger.debug(
+                "音频文件信息",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id,
+                    'parameters': {
+                        'file_path': audio_path,
+                        'file_size': f"{file_size:.2f}MB",
+                        'duration': f"{duration:.2f}秒",
+                        'sample_rate': f"{audio.frame_rate}Hz",
+                        'channels': audio.channels,
+                        'bit_depth': f"{audio.sample_width * 8}位"
+                    }
+                }
+            )
+            
+            # 预估成本
+            estimated_cost = duration * price_per_second
+            self.logger.debug(
+                "成本预估",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id,
+                    'parameters': {
+                        'duration': f"{duration:.2f}秒",
+                        'price_per_second': f"¥{price_per_second}",
+                        'estimated_cost': f"¥{estimated_cost:.4f}"
+                    }
+                }
+            )
+            
+            # 更新总费用统计
+            self.total_tokens[self.asr_model] = float(duration)
+
+            # 构建请求参数
+            request_params = model_config['params'].copy()
+            request_params['model'] = self.asr_model
+            request_params['file_urls'] = [file_url]
+            request_params['parameters'] = {
+                'format_tags': False,  # 关闭标签输出
+                'channel_id': [0]  # 指定音频通道
+            }
+            
+            # 记录请求参数
+            self.logger.debug(
+                "语音识别请求参数",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id,
+                    'parameters': request_params
+                }
+            )
+            
+            # 提交异步转写任务
+            self.logger.info(
+                "提交语音识别任务...",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id
+                }
+            )
+            start_time = time.time()
+            task_response = Transcription.async_call(**request_params)
+            
+            # 记录任务提交响应
+            self.logger.debug(
+                "任务提交响应",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id,
+                    'response': task_response.__dict__
+                }
+            )
+            
+            if not task_response or not task_response.output:
+                raise Exception("提交任务失败")
+                
+            # 获取任务ID
+            task_id = task_response.output.task_id
+            self.logger.info(
+                f"等待转写结果... (任务ID: {task_id})",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id
+                }
+            )
+            
+            # 记录轮询开始时间
+            poll_start_time = time.time()
+            
+            # 等待任务完成并获取结果
+            response = Transcription.wait(task=task_id)
+            
+            # 记录轮询结束时间和总耗时
+            poll_end_time = time.time()
+            total_duration = poll_end_time - start_time
+            poll_duration = poll_end_time - poll_start_time
+            
+            # 记录耗时统计
+            self.logger.info(
+                "转写任务耗时统计",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id,
+                    'parameters': {
+                        'total_duration': f"{total_duration:.2f}秒",
+                        'poll_duration': f"{poll_duration:.2f}秒"
+                    }
+                }
+            )
+            
+            # 检查响应
+            if not response or response.status_code != HTTPStatus.OK:
+                error_msg = response.message if response else "无效的响应"
+                raise Exception(f"语音识别失败: {error_msg}")
+                
+            # 记录完整的响应内容
+            self.logger.debug(
+                "转写最终响应",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id,
+                    'response': response.output
+                }
+            )
+            
+            # 计算实际成本
+            actual_cost = duration * price_per_second
+            self.logger.debug(
+                "语音识别任务统计",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id,
+                    'parameters': {
+                        'audio_duration': f"{duration:.2f}秒",
+                        'actual_cost': f"¥{actual_cost:.4f}",
+                        'price_rate': f"¥{price_per_second}/秒"
+                    }
+                }
+            )
+            
+            self.logger.info(
+                "语音识别任务完成",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id
+                }
+            )
+            return response.output
+            
+        except Exception as e:
+            self.logger.error(
+                f"语音识别失败: {str(e)}",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id if 'request_id' in locals() else str(uuid.uuid4()),
+                    'error': str(e),
+                    'stack_trace': traceback.format_exc()
+                }
+            )
+            sys.exit(1)  # 语音识别失败时直接退出
+            
+    @retry_on_timeout(max_retries=3, base_delay=1)
+    @log_service_call(service='Translate', api='translate_text')
     def translate_text(self, text: str) -> str:
         """翻译文本
         
@@ -666,8 +811,12 @@ class YouTubeTranscriber:
             str: 翻译后的文本
         """
         try:
+            request_id = str(uuid.uuid4())
             self.logger.info("开始翻译文本...")
-            self.logger.debug(f"原文长度: {len(text)} 字符")
+            
+            # 分段处理文本
+            segments = self.split_text_for_translation(text)
+            translated_segments = []
             
             # 获取模型配置
             model_config = MODEL_CONFIG['translation']['available_models'][self.translation_model]
@@ -675,84 +824,111 @@ class YouTubeTranscriber:
             # 显示模型信息
             self.logger.info(f"使用翻译模型: {self.translation_model}")
             self.logger.info(f"- 价格: ¥{model_config['input_price_per_1k_tokens']}/1K tokens")
+            self.logger.info(f"- 文本已分为 {len(segments)} 个片段")
             
-            # 估算token数量（粗略估计：每4个字符约1个token）
-            estimated_tokens = len(text) // 4
-            estimated_cost = (estimated_tokens / 1000) * model_config['input_price_per_1k_tokens']
-            
-            self.logger.debug(f"预估token数: {estimated_tokens}")
-            self.logger.debug(f"预估成本: ¥{estimated_cost:.4f}")
-            
-            # 构建请求消息
-            messages = [
-                {
-                    "role": "user",
-                    "content": text
+            # 逐段翻译
+            for i, segment in enumerate(segments, 1):
+                self.logger.info(f"翻译第 {i}/{len(segments)} 个片段...")
+                
+                # 构建请求消息
+                messages = [
+                    {
+                        "role": "user",
+                        "content": segment
+                    }
+                ]
+                
+                # 构建翻译选项
+                translation_options = {
+                    "source_lang": "English",  # 源语言为英语
+                    "target_lang": "Chinese",  # 目标语言为中文
+                    "domains": "The text contains timestamps and specific formatting that should be preserved. Please maintain the original format including timestamps [MM:SS - MM:SS] at the beginning of each line. The content is from IT domain, involving computer-related software development and usage methods. Pay attention to professional terminologies and sentence patterns when translating."  # 领域提示和格式要求
                 }
-            ]
+                
+                # 调用翻译API
+                response = Generation.call(
+                    model=self.translation_model,
+                    messages=messages,
+                    result_format='message',
+                    translation_options=translation_options
+                )
+                
+                # 检查响应状态
+                if not response or not hasattr(response, 'status_code') or response.status_code != HTTPStatus.OK:
+                    error_msg = getattr(response, 'message', '未知错误')
+                    raise Exception(f"翻译API调用失败: {error_msg}")
+                
+                # 提取翻译结果
+                if not hasattr(response, 'output') or not response.output:
+                    raise Exception("API响应缺少output字段")
+                
+                if not hasattr(response.output, 'choices') or not response.output.choices:
+                    raise Exception("API响应output缺少choices字段")
+                
+                if not response.output.choices[0].message:
+                    raise Exception("API响应choices缺少message字段")
+                
+                translated_text = response.output.choices[0].message.content.strip()
+                if not translated_text:
+                    raise Exception("API返回的翻译文本为空")
+                
+                translated_segments.append(translated_text)
+                
+                # 更新token统计
+                if hasattr(response, 'usage') and response.usage:
+                    total_tokens = response.usage.total_tokens
+                    self.total_tokens[self.translation_model] = float(total_tokens)
+                
+                # 添加延迟，避免请求过快
+                if i < len(segments):
+                    time.sleep(1)
             
-            # 构建翻译选项
-            translation_options = {
-                "source_lang": "English",  # 源语言为英语
-                "target_lang": "Chinese",  # 目标语言为中文
-                "domains": "The sentence is from IT domain. It mainly involves computer-related software development and usage methods. Pay attention to professional terminologies and sentence patterns when translating."  # 领域提示
-            }
-            
-            self.logger.debug("API请求参数:")
-            self.logger.debug(f"- 模型: {self.translation_model}")
-            self.logger.debug(f"- 翻译选项: {translation_options}")
-            self.logger.debug(f"- 消息内容: {text[:100]}...")  # 只记录前100个字符
-            
-            # 调用翻译API
-            response = Generation.call(
-                model=self.translation_model,
-                messages=messages,
-                result_format='message',
-                translation_options=translation_options
-            )
-            
-            # 记录API响应
-            self.logger.debug("API响应:")
-            self.logger.debug(f"- 状态码: {response.status_code if hasattr(response, 'status_code') else 'None'}")
-            self.logger.debug(f"- 请求ID: {response.request_id if hasattr(response, 'request_id') else 'None'}")
-            
-            # 检查响应状态
-            if not response or not hasattr(response, 'status_code') or response.status_code != HTTPStatus.OK:
-                error_msg = getattr(response, 'message', '未知错误')
-                raise Exception(f"翻译API调用失败: {error_msg}")
-            
-            # 提取翻译结果
-            if not hasattr(response, 'output') or not response.output:
-                raise Exception("API响应缺少output字段")
-            
-            if not hasattr(response.output, 'choices') or not response.output.choices:
-                raise Exception("API响应output缺少choices字段")
-            
-            if not response.output.choices[0].message:
-                raise Exception("API响应choices缺少message字段")
-            
-            translated_text = response.output.choices[0].message.content.strip()
-            if not translated_text:
-                raise Exception("API返回的翻译文本为空")
-            
-            # 更新token统计
-            if hasattr(response, 'usage') and response.usage:
-                total_tokens = response.usage.total_tokens
-                self.total_tokens[self.translation_model] = float(total_tokens)
-                actual_cost = (total_tokens / 1000) * model_config['input_price_per_1k_tokens']
-                self.logger.debug(f"实际使用token数: {total_tokens}")
-                self.logger.debug(f"实际成本: ¥{actual_cost:.4f}")
+            # 合并翻译结果
+            final_text = self.merge_translated_segments(translated_segments)
             
             self.logger.info("文本翻译完成")
-            self.logger.debug(f"翻译后文本长度: {len(translated_text)} 字符")
-            return translated_text
+            return final_text
             
         except Exception as e:
-            self.logger.error(f"翻译文本时出错: {str(e)}")
+            self.logger.error(
+                f"翻译失败: {str(e)}",
+                extra={
+                    'service': 'Translate',
+                    'request_id': request_id if 'request_id' in locals() else str(uuid.uuid4()),
+                    'error': str(e),
+                    'stack_trace': traceback.format_exc()
+                }
+            )
+            sys.exit(1)  # 翻译失败时直接退出
+    
+    def merge_translated_segments(self, segments: List[str]) -> str:
+        """合并翻译后的文本片段。
+        
+        Args:
+            segments: 翻译后的文本片段列表
+            
+        Returns:
+            str: 合并后的文本
+        """
+        try:
+            start_time = time.time()
+            self.logger.info("开始合并翻译片段...")
+            merged_text = ""
+            
+            for segment in segments:
+                # 确保片段之间有换行
+                if merged_text and not merged_text.endswith('\n'):
+                    merged_text += '\n'
+                merged_text += segment.strip() + '\n'
+            
+            end_time = time.time()
+            self.logger.info(f"翻译片段合并完成，共 {len(segments)} 个片段，耗时 {end_time - start_time:.2f} 秒")
+            return merged_text.strip()
+            
+        except Exception as e:
+            self.logger.error(f"合并翻译片段时出错: {str(e)}")
             self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
-            # 出错时返回原文
-            self.logger.warning("由于翻译失败，返回原文")
-            return text
+            return "\n".join(segments)  # 出错时简单连接
     
     def print_token_statistics(self) -> None:
         """打印令牌使用统计信息。"""
@@ -847,18 +1023,26 @@ class YouTubeTranscriber:
             self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
     
     def extract_text_from_result(self, result: Dict) -> List[Tuple[str, float, float]]:
-        """从转写结果中提取文本和时间戳。
+        """从识别结果中提取文本。
         
         Args:
-            result (Dict): 转写结果 JSON
+            result: 识别结果
             
         Returns:
-            List[Tuple[str, float, float]]: 包含 (text, start_time, end_time) 元组的列表
+            List[Tuple[str, float, float]]: 提取的文本片段列表，每个元素为(文本, 开始时间, 结束时间)
         """
-        segments = []
         try:
+            start_time = time.time()
+            request_id = str(uuid.uuid4())
+            segments = []
             # 记录原始结果用于调试
-            self.logger.debug(f"提取文本的原始数据: {json.dumps(result, ensure_ascii=False, indent=2)}")
+            self.logger.debug(
+                f"提取文本的原始数据: {json.dumps(result, ensure_ascii=False, indent=2)}",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id
+                }
+            )
             
             # 检查结果格式
             if not isinstance(result, dict):
@@ -870,7 +1054,13 @@ class YouTubeTranscriber:
                 
             for item in result['results']:
                 if 'transcription_url' not in item:
-                    self.logger.warning("结果中缺少 transcription_url")
+                    self.logger.warning(
+                        "结果中缺少 transcription_url",
+                        extra={
+                            'service': 'ASR',
+                            'request_id': request_id
+                        }
+                    )
                     continue
                     
                 try:
@@ -881,7 +1071,13 @@ class YouTubeTranscriber:
                     transcription = response.json()
                     
                     # 记录转写内容用于调试
-                    self.logger.debug(f"转写内容: {json.dumps(transcription, ensure_ascii=False, indent=2)}")
+                    self.logger.debug(
+                        f"转写内容: {json.dumps(transcription, ensure_ascii=False, indent=2)}",
+                        extra={
+                            'service': 'ASR',
+                            'request_id': request_id
+                        }
+                    )
                     
                     # 解析转写内容
                     if 'transcripts' in transcription:
@@ -890,124 +1086,60 @@ class YouTubeTranscriber:
                                 for sentence in transcript['sentences']:
                                     text = sentence.get('text', '').strip()
                                     if text:
-                                        start_time = sentence.get('begin_time', 0) / 1000.0  # 转换为秒
-                                        end_time = sentence.get('end_time', 0) / 1000.0
-                                        segments.append((text, start_time, end_time))
+                                        # 清理标签
+                                        text = re.sub(r'</?(?:Speech|BGM|NEUTRAL|HAPPY|SAD|ANGRY|silence|noise|[^>]+)>', '', text)
+                                        text = ' '.join(text.split())  # 清理多余空格
+                                        if text:  # 确保清理后文本非空
+                                            start_time = sentence.get('begin_time', 0) / 1000.0  # 转换为秒
+                                            end_time = sentence.get('end_time', 0) / 1000.0
+                                            segments.append((text, start_time, end_time))
                                         
                 except Exception as e:
-                    self.logger.error(f"处理转写URL时出错: {str(e)}")
+                    self.logger.error(
+                        f"处理转写URL时出错: {str(e)}",
+                        extra={
+                            'service': 'ASR',
+                            'request_id': request_id
+                        }
+                    )
                     continue
             
             if not segments:
-                self.logger.error("未能从结果中提取到任何文本")
-                self.logger.debug(f"原始结果: {json.dumps(result, ensure_ascii=False, indent=2)}")
+                self.logger.error(
+                    "未能从结果中提取到任何文本",
+                    extra={
+                        'service': 'ASR',
+                        'request_id': request_id
+                    }
+                )
+                self.logger.debug(
+                    f"原始结果: {json.dumps(result, ensure_ascii=False, indent=2)}",
+                    extra={
+                        'service': 'ASR',
+                        'request_id': request_id
+                    }
+                )
             else:
-                self.logger.info(f"成功提取了 {len(segments)} 个文本片段")
+                end_time = time.time()
+                self.logger.info(
+                    f"成功提取了 {len(segments)} 个文本片段，耗时 {end_time - start_time:.2f} 秒",
+                    extra={
+                        'service': 'ASR',
+                        'request_id': request_id
+                    }
+                )
             
             return segments
             
         except Exception as e:
-            self.logger.error(f"提取文本时出错: {str(e)}")
+            self.logger.error(
+                f"提取文本时出错: {str(e)}",
+                extra={
+                    'service': 'ASR',
+                    'request_id': str(uuid.uuid4())
+                }
+            )
             return []
-    
-    def recognize_speech(self, audio_path: str, file_url: str) -> Optional[Dict]:
-        """识别音频文件中的语音。
-        
-        Args:
-            audio_path (str): 音频文件路径
-            file_url (str): 已上传到OSS的文件URL
-            
-        Returns:
-            Optional[Dict]: 识别结果
-        """
-        try:
-            # 获取模型配置
-            model_config = MODEL_CONFIG['speech_recognition']
-            price_per_second = model_config['price_per_second']
-            
-            # 显示模型信息
-            self.logger.info(f"使用语音识别模型: {self.asr_model}")
-            self.logger.info(f"- 价格: ¥{price_per_second}/秒")
-            
-            # 计算音频文件大小和时长
-            file_size = os.path.getsize(audio_path) / (1024 * 1024)  # 转换为MB
-            audio = AudioSegment.from_file(audio_path)
-            duration = len(audio) / 1000  # 转换为秒
-            
-            self.logger.debug(f"音频文件信息:")
-            self.logger.debug(f"- 路径: {audio_path}")
-            self.logger.debug(f"- 大小: {file_size:.2f}MB")
-            self.logger.debug(f"- 时长: {duration:.2f}秒")
-            self.logger.debug(f"- 采样率: {audio.frame_rate}Hz")
-            self.logger.debug(f"- 声道数: {audio.channels}")
-            self.logger.debug(f"- 位深度: {audio.sample_width * 8}位")
-            
-            # 预估成本
-            estimated_cost = duration * price_per_second
-            self.logger.debug(f"预估成本: ¥{estimated_cost:.4f}")
-            
-            # 更新总费用统计
-            self.total_tokens[self.asr_model] = float(duration)  # 更新语音识别的时长统计
-
-            # 构建请求参数
-            request_params = model_config['params'].copy()
-            request_params['model'] = self.asr_model
-            request_params['file_urls'] = [file_url]
-            
-            # 记录请求参数
-            self.logger.debug(f"语音识别请求参数:\n{json.dumps(request_params, ensure_ascii=False, indent=2)}")
-            
-            # 提交异步转写任务
-            self.logger.info("提交语音识别任务...")
-            start_time = time.time()
-            task_response = Transcription.async_call(**request_params)
-            
-            # 记录任务提交响应
-            self.logger.debug(f"任务提交响应:\n{json.dumps(task_response.__dict__, ensure_ascii=False, indent=2)}")
-            
-            if not task_response or not task_response.output:
-                raise Exception("提交任务失败")
-                
-            # 获取任务ID
-            task_id = task_response.output.task_id
-            self.logger.info(f"等待转写结果... (任务ID: {task_id})")
-            
-            # 记录轮询开始时间
-            poll_start_time = time.time()
-            
-            # 等待任务完成并获取结果
-            response = Transcription.wait(task=task_id)
-            
-            # 记录轮询结束时间和总耗时
-            poll_end_time = time.time()
-            total_duration = poll_end_time - start_time
-            poll_duration = poll_end_time - poll_start_time
-            
-            self.logger.debug(f"转写任务耗时统计:")
-            self.logger.debug(f"- 总耗时: {total_duration:.2f}秒")
-            self.logger.debug(f"- 轮询耗时: {poll_duration:.2f}秒")
-            
-            # 检查响应
-            if not response or response.status_code != HTTPStatus.OK:
-                error_msg = response.message if response else "无效的响应"
-                raise Exception(f"语音识别失败: {error_msg}")
-                
-            # 记录完整的响应内容
-            self.logger.debug(f"转写最终响应:\n{json.dumps(response.output, ensure_ascii=False, indent=2)}")
-            
-            # 计算实际成本
-            actual_cost = duration * price_per_second
-            self.logger.debug(f"语音识别任务统计:")
-            self.logger.debug(f"- 音频时长: {duration:.2f}秒")
-            self.logger.debug(f"- 实际成本: ¥{actual_cost:.4f} (按 ¥{price_per_second}/秒 计算)")
-            
-            self.logger.info("语音识别任务完成")
-            return response.output
-            
-        except Exception as e:
-            self.logger.error(f"语音识别失败: {str(e)}")
-            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
-            return None
     
     def get_query_headers(self, request_id: str) -> dict:
         """生成查询请求的请求头
@@ -1246,81 +1378,122 @@ class YouTubeTranscriber:
     def setup_logging(self, debug: bool = False):
         """设置日志记录器。
         
+        日志文件结构：
+        - info_{timestamp}.log: 程序正常执行的日志
+        - error_{timestamp}.log: 除ASR和Translate外的所有错误日志
+        - debug_{timestamp}.log: 除ASR和Translate外的所有调试日志
+        - asr_{timestamp}.log: 语音识别模块的调试和错误日志
+        - translate_{timestamp}.log: 文本翻译模块的调试和错误日志
+        
         Args:
             debug (bool): 是否启用调试模式
         """
-        # 创建 logs 目录（如果不存在）
+        # 创建 logs 目录
         if not os.path.exists('logs'):
             os.makedirs('logs')
             
-        # 生成时间戳
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        # 生成统一的时间戳（月日_时分秒）
+        timestamp = datetime.now().strftime('%m%d_%H%M%S')
         
-        # 定义不同级别日志的文件名
+        # 定义日志文件路径
         log_files = {
-            'app': f'logs/app_{timestamp}.log',      # INFO级别的常规日志
-            'error': f'logs/error_{timestamp}.log',   # ERROR级别的错误日志
-            'debug': f'logs/debug_{timestamp}.log',   # DEBUG级别的调试日志
-            'download': f'logs/download_{timestamp}.log'  # 下载相关的日志
+            'info': f'logs/info_{timestamp}.log',          # 正常执行日志
+            'error': f'logs/error_{timestamp}.log',        # 通用错误日志
+            'debug': f'logs/debug_{timestamp}.log',        # 通用调试日志
+            'asr': f'logs/asr_{timestamp}.log',           # 语音识别日志
+            'translate': f'logs/translate_{timestamp}.log' # 翻译日志
         }
+        
+        # 创建格式化器
+        standard_formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s'
+        )
+        
+        detailed_formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - [%(name)s] - %(message)s\n'
+            'File: %(pathname)s:%(lineno)d\n'
+            'Function: %(funcName)s'
+        )
+        
+        # 使用自定义的服务日志格式化器
+        service_formatter = ServiceFormatter(
+            '%(asctime)s - %(levelname)s - [%(service)s] - %(message)s\n'
+            'Request ID: %(request_id)s\n'
+            'Duration: %(duration).2fms\n'
+            'Status: %(status)s\n'
+            'Parameters: %(parameters)s\n'
+            'Response: %(response)s'
+        )
         
         # 配置日志记录器
         self.logger = logging.getLogger('youtube_transcriber')
-        self.logger.setLevel(logging.DEBUG)  # 主记录器设置为最低级别
+        self.logger.setLevel(logging.DEBUG)
         
         # 清除现有的处理器
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)
-            
-        # 创建格式化器
-        detailed_formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s\n'
-            'File "%(pathname)s", line %(lineno)d'
-        )
-        simple_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         
-        # 创建并配置文件处理器
+        # 1. INFO日志处理器 - 仅记录INFO级别日志
+        info_handler = logging.FileHandler(log_files['info'], encoding='utf-8')
+        info_handler.setLevel(logging.INFO)
+        info_handler.setFormatter(standard_formatter)
+        info_handler.addFilter(lambda record: record.levelno == logging.INFO)
         
-        # 1. app.log - INFO及以上级别的常规日志
-        app_handler = logging.FileHandler(log_files['app'], encoding='utf-8')
-        app_handler.setLevel(logging.INFO)
-        app_handler.setFormatter(simple_formatter)
-        app_handler.addFilter(lambda record: record.levelno >= logging.INFO and 'download' not in record.msg.lower())
-        self.logger.addHandler(app_handler)
-        
-        # 2. error.log - 只记录ERROR级别的日志
+        # 2. ERROR日志处理器 - 仅记录非服务类的错误日志
         error_handler = logging.FileHandler(log_files['error'], encoding='utf-8')
         error_handler.setLevel(logging.ERROR)
         error_handler.setFormatter(detailed_formatter)
-        self.logger.addHandler(error_handler)
+        error_handler.addFilter(lambda record: 
+            record.levelno >= logging.ERROR and 
+            not hasattr(record, 'service')
+        )
         
-        # 3. debug.log - 记录所有DEBUG及以上级别的日志（仅在debug模式下创建）
-        if debug:
-            debug_handler = logging.FileHandler(log_files['debug'], encoding='utf-8')
-            debug_handler.setLevel(logging.DEBUG)
-            debug_handler.setFormatter(detailed_formatter)
-            self.logger.addHandler(debug_handler)
-            
-        # 4. download.log - 专门记录下载相关的日志
-        download_handler = logging.FileHandler(log_files['download'], encoding='utf-8')
-        download_handler.setLevel(logging.INFO)
-        download_handler.setFormatter(simple_formatter)
-        download_handler.addFilter(lambda record: 'download' in record.msg.lower())
-        self.logger.addHandler(download_handler)
+        # 3. DEBUG日志处理器 - 仅记录非服务类的调试日志
+        debug_handler = logging.FileHandler(log_files['debug'], encoding='utf-8')
+        debug_handler.setLevel(logging.DEBUG)
+        debug_handler.setFormatter(detailed_formatter)
+        debug_handler.addFilter(lambda record: 
+            record.levelno == logging.DEBUG and 
+            (not hasattr(record, 'service') or record.service not in ['ASR', 'Translate'])
+        )
         
-        # 控制台处理器 - 根据debug标志设置级别
+        # 4. ASR日志处理器 - 仅记录ASR服务的日志
+        asr_handler = logging.FileHandler(log_files['asr'], encoding='utf-8')
+        asr_handler.setLevel(logging.DEBUG)
+        asr_handler.setFormatter(service_formatter)
+        asr_handler.addFilter(lambda record: 
+            hasattr(record, 'service') and 
+            record.service == 'ASR'
+        )
+        
+        # 5. Translate日志处理器 - 仅记录翻译服务的日志
+        translate_handler = logging.FileHandler(log_files['translate'], encoding='utf-8')
+        translate_handler.setLevel(logging.DEBUG)
+        translate_handler.setFormatter(service_formatter)
+        translate_handler.addFilter(lambda record: 
+            hasattr(record, 'service') and 
+            record.service == 'Translate'
+        )
+        
+        # 6. 控制台处理器 - 根据debug参数设置级别
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
-        console_handler.setFormatter(simple_formatter)
+        console_handler.setFormatter(standard_formatter)
+        
+        # 添加所有处理器
+        self.logger.addHandler(info_handler)
+        self.logger.addHandler(error_handler)
+        self.logger.addHandler(debug_handler)
+        self.logger.addHandler(asr_handler)
+        self.logger.addHandler(translate_handler)
         self.logger.addHandler(console_handler)
         
         # 记录初始化信息
         self.logger.info('日志系统初始化完成')
         self.logger.info('日志文件:')
         for log_type, log_path in log_files.items():
-            if log_type != 'debug' or debug:  # 只在debug模式下显示debug日志文件
-                self.logger.info(f'- {log_type}: {log_path}')
-                
+            self.logger.info(f'- {log_type}: {log_path}')
+        
         if debug:
             self.logger.debug('调试模式已启用')
             self.logger.debug('系统信息:')
@@ -1444,137 +1617,153 @@ class YouTubeTranscriber:
         # 设置值
         config[keys[-1]] = value
         
-    def download_video(self, video_url: str) -> str:
-        """下载YouTube视频
+    def download_video(self, url: str) -> Tuple[str, str, str]:
+        """下载YouTube视频。
+        
         Args:
-            video_url: YouTube视频URL
+            url: YouTube视频URL
+            
         Returns:
-            str: 视频ID
+            Tuple[str, str, str]: (视频ID, 视频标题, 音频文件路径)
         """
         try:
-            # 提取视频ID
-            video_id = extract_video_id(video_url)
-            if not video_id:
-                raise ValueError("无效的YouTube URL")
-                
-            # 获取视频保存路径
-            video_path = self.get_file_path('video', video_id=video_id)
+            start_time = time.time()
+            self.logger.info("开始下载视频...")
             
-            # 配置yt-dlp选项
+            # 提取视频ID
+            video_id = extract_video_id(url)
+            if not video_id:
+                raise Exception("无法从URL中提取视频ID")
+            
+            # 确保临时目录存在
+            os.makedirs(self.temp_dir, exist_ok=True)
+            
+            # 设置下载选项
+            output_template = os.path.join(self.temp_dir, video_id)  # 不包含扩展名
             ydl_opts = {
-                'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'outtmpl': video_path,
+                'format': 'bestaudio/best',  # 选择最佳音频质量
+                'outtmpl': output_template,  # 输出模板，不包含扩展名
                 'quiet': True,
                 'no_warnings': True,
                 'extract_flat': False,
                 'ignoreerrors': False,
-                'retries': 3,
-                'fragment_retries': 3,
-                'concurrent_fragment_downloads': 4,
+                'retries': 3,  # 下载重试次数
+                'fragment_retries': 3,  # 分片下载重试次数
                 'postprocessors': [{
-                    'key': 'FFmpegVideoConvertor',
-                    'preferedformat': 'mp4'
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',  # 设置较高的音质
                 }]
             }
             
-            # 下载视频
+            # 下载视频并提取音频
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                self.logger.info("开始下载视频...")
-                info = ydl.extract_info(video_url, download=True)
-                if not info:
-                    raise Exception("无法获取视频信息")
-                
-            # 检查文件是否存在
-            if not os.path.exists(video_path):
-                # 检查是否有 .mp4 扩展名被自动添加
-                video_path_with_ext = video_path + '.mp4'
-                if os.path.exists(video_path_with_ext):
-                    video_path = video_path_with_ext
-                else:
-                    raise Exception(f"视频下载失败，文件不存在: {video_path}")
-                
-            # 跟踪临时文件
-            self.track_temp_file(video_path)
+                info = ydl.extract_info(url, download=True)
+                video_title = info.get('title', video_id)
+                if not video_title:
+                    video_title = video_id
             
-            # 记录视频信息
-            file_size = os.path.getsize(video_path)
-            self.logger.info(f"视频已下载: {video_path}")
-            self.logger.info(f"文件大小: {file_size/1024/1024:.2f}MB")
+            # 获取实际的输出文件路径
+            audio_path = output_template + '.mp3'
             
-            # 返回视频ID和路径
-            return video_id, video_path
+            # 文件检查
+            if not os.path.exists(audio_path):
+                raise Exception(f"下载完成但找不到输出文件: {audio_path}")
+                
+            if os.path.getsize(audio_path) == 0:
+                raise Exception(f"下载的文件大小为0: {audio_path}")
+            
+            # 记录临时文件
+            self.temp_files.append(audio_path)
+            
+            end_time = time.time()
+            duration = end_time - start_time
+            self.logger.info(f"音频下载完成，耗时 {duration:.2f} 秒")
+            self.logger.info(f"- 视频标题: {video_title}")
+            self.logger.info(f"- 文件大小: {os.path.getsize(audio_path) / (1024*1024):.2f}MB")
+            
+            # 如果下载时间过长，记录警告
+            if duration > 300:  # 5分钟
+                self.logger.warning(f"下载耗时较长 ({duration:.2f}秒)，可能需要检查网络状况")
+            
+            return video_id, video_title, audio_path
             
         except Exception as e:
-            self.handle_error(e, "下载视频")
-            return None, None
+            self.logger.error(f"下载视频时出错: {str(e)}")
+            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
+            raise
             
     def extract_audio(self, audio_path: str, video_id: str) -> str:
-        """处理音频文件，转换为正确的格式。
+        """从MP3文件中提取WAV格式音频。
         
         Args:
-            audio_path: 输入音频文件路径
+            audio_path: MP3文件路径
             video_id: 视频ID
             
         Returns:
-            str: 处理后的音频文件路径
+            str: WAV格式音频文件路径
         """
         try:
-            # 检查输入文件
-            if not os.path.exists(audio_path):
-                raise FileNotFoundError(f"音频文件不存在: {audio_path}")
-                
-            # 生成输出文件路径（使用wav格式）
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            output_path = os.path.join(self.dirs['temp'], f"{timestamp}_{video_id}.wav")
+            start_time = time.time()
+            self.logger.info("开始转换音频格式...")
             
-            # 加载音频文件
-            self.logger.info("加载音频文件...")
-            audio = AudioSegment.from_file(audio_path)
+            # 构建输出路径
+            wav_path = os.path.join(self.temp_dir, f"{video_id}.wav")
             
-            # 设置音频参数
-            self.logger.info("转换音频格式...")
-            audio = audio.set_frame_rate(16000)  # 设置采样率
-            audio = audio.set_channels(1)        # 设置为单声道
-            audio = audio.set_sample_width(2)    # 设置为16位
-            
-            # 标准化音量
-            audio = audio.normalize()
-            
-            # 导出为WAV格式
-            self.logger.info(f"保存处理后的音频到: {output_path}")
-            audio.export(
-                output_path,
-                format='wav',
-                parameters=[
-                    "-ac", "1",         # 单声道
-                    "-ar", "16000",     # 16kHz采样率
-                    "-acodec", "pcm_s16le"  # 16位PCM编码
-                ]
+            # 转换音频格式
+            stream = ffmpeg.input(audio_path)
+            stream = ffmpeg.output(
+                stream,
+                wav_path,
+                acodec='pcm_s16le',
+                ac=1,
+                ar='16k'
             )
+            ffmpeg.run(stream, capture_stdout=True, capture_stderr=True)
             
-            # 记录音频信息
-            duration = len(audio) / 1000  # 转换为秒
-            file_size = os.path.getsize(output_path)
-            self.logger.info(f"音频处理完成:")
-            self.logger.info(f"- 时长: {duration:.2f}秒")
-            self.logger.info(f"- 大小: {file_size/1024/1024:.2f}MB")
-            self.logger.info(f"- 采样率: {audio.frame_rate}Hz")
-            self.logger.info(f"- 声道数: {audio.channels}")
-            self.logger.info(f"- 位深度: {audio.sample_width * 8}位")
+            # 记录临时文件
+            self.temp_files.append(wav_path)
             
-            # 删除原始MP3文件
-            if os.path.exists(audio_path) and audio_path != output_path:
-                os.remove(audio_path)
-                self.logger.info(f"已删除原始MP3文件: {audio_path}")
+            end_time = time.time()
+            self.logger.info(f"音频格式转换完成，耗时 {end_time - start_time:.2f} 秒")
+            self.logger.info(f"- 输出格式: WAV 16kHz 单声道")
+            self.logger.info(f"- 文件大小: {os.path.getsize(wav_path) / (1024*1024):.2f}MB")
             
-            return output_path
+            return wav_path
             
         except Exception as e:
-            self.logger.error(f"处理音频时出错: {str(e)}")
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
-                self.logger.info(f"清理失败的音频文件: {audio_path}")
-            return None
+            self.logger.error(f"转换音频格式时出错: {str(e)}")
+            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
+            raise
+
+    def upload_audio(self, audio_path: str) -> str:
+        """上传音频文件到OSS。
+        
+        Args:
+            audio_path: 音频文件路径
+            
+        Returns:
+            str: 上传后的文件URL
+        """
+        try:
+            start_time = time.time()
+            self.logger.info("开始上传音频文件...")
+            
+            # 上传文件
+            file_url = self.upload_to_oss(audio_path)
+            if not file_url:
+                raise Exception("文件上传失败")
+                
+            end_time = time.time()
+            self.logger.info(f"音频文件上传完成，耗时 {end_time - start_time:.2f} 秒")
+            self.logger.info(f"- 文件URL: {file_url}")
+            
+            return file_url
+            
+        except Exception as e:
+            self.logger.error(f"上传音频文件时出错: {str(e)}")
+            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
+            raise
 
     def save_transcript(self, text: str, video_id: str) -> None:
         """保存转写结果
@@ -1787,6 +1976,7 @@ class YouTubeTranscriber:
             self.logger.error(f"下载音频失败: {str(e)}")
             raise
 
+    @log_service_call(service='OSS', api='upload_file')
     def upload_to_oss(self, local_file: str) -> str:
         """上传文件到 OSS。
         
@@ -1930,37 +2120,147 @@ class YouTubeTranscriber:
             self.logger.error(error_msg)
             raise ValueError(error_msg)
 
-    def estimate_processing_time(self, duration: float) -> dict:
-        """预估处理时间（秒）
-        
-        预估公式：
-        总时间 = 下载时间 + 音频处理时间 + 上传时间 + 识别时间 + 翻译时间
-        
-        其中：
-        - 下载时间 ≈ 视频时长 * 0.3（考虑压缩比和网络速度）
-        - 音频处理时间 ≈ 视频时长 * 0.2
-        - 上传时间 ≈ 视频时长 * 0.1（音频文件比视频小）
-        - 识别时间 ≈ 视频时长 * 1.2（语音识别通常需要1-2倍时长）
-        - 翻译时间 ≈ 视频时长 * 0.4（假设每分钟音频产生约100个单词）
+    def log_service_call(self, service: str, api: str, parameters: dict = None):
+        """记录服务调用的装饰器
         
         Args:
-            duration: 视频时长（秒）
-        
-        Returns:
-            dict: 包含各阶段预估时间的字典
+            service: 服务名称 ('ASR', 'Translate', 'OSS')
+            api: API名称
+            parameters: API参数
         """
-        estimates = {
-            'download': duration * 0.3,
-            'audio_process': duration * 0.2,
-            'upload': duration * 0.1,
-            'recognition': duration * 1.2,
-            'translation': duration * 0.4
-        }
+        def decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                request_id = str(uuid.uuid4())
+                start_time = time.time()
+                
+                try:
+                    # 执行API调用
+                    result = func(*args, **kwargs)
+                    
+                    # 计算耗时
+                    duration = (time.time() - start_time) * 1000
+                    
+                    # 记录成功响应
+                    self.logger.info(
+                        f"{service} - {api} 调用成功",
+                        extra={
+                            'service': service,
+                            'request_id': request_id,
+                            'api': api,
+                            'duration': duration,
+                            'status': 'success'
+                        }
+                    )
+                    
+                    return result
+                    
+                except Exception as e:
+                    # 计算耗时
+                    duration = (time.time() - start_time) * 1000
+                    
+                    # 记录错误信息
+                    self.logger.error(
+                        f"{service} - {api} 调用失败: {str(e)}",
+                        extra={
+                            'service': service,
+                            'request_id': request_id,
+                            'api': api,
+                            'duration': duration,
+                            'status': 'error'
+                        }
+                    )
+                    raise
+                    
+            return wrapper
+        return decorator
+
+    def save_original_text(self, text: str, video_id: str) -> str:
+        """保存原始转写文本。
         
-        # 计算总时间并添加10%的缓冲
-        estimates['total'] = sum(estimates.values()) * 1.1
+        Args:
+            text: 要保存的文本
+            video_id: 视频ID
+            
+        Returns:
+            str: 保存的文件路径
+        """
+        try:
+            # 生成文件名
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"{timestamp}_{video_id}_original.md"
+            file_path = os.path.join(self.dirs['transcripts'], filename)
+            
+            # 保存文件
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(text)
+                
+            self.logger.info(f"原始转写文本已保存: {filename}")
+            self.logger.info(f"- 文件大小: {os.path.getsize(file_path) / 1024:.2f}KB")
+            
+            return file_path
+            
+        except Exception as e:
+            self.logger.error(f"保存原始转写文本时出错: {str(e)}")
+            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
+            raise
+            
+    def save_translated_text(self, text: str, video_id: str) -> str:
+        """保存翻译后的文本。
         
-        return estimates
+        Args:
+            text: 要保存的文本
+            video_id: 视频ID
+            
+        Returns:
+            str: 保存的文件路径
+        """
+        try:
+            # 生成文件名
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"{timestamp}_{video_id}_translated.md"
+            file_path = os.path.join(self.dirs['transcripts'], filename)
+            
+            # 保存文件
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(text)
+                
+            self.logger.info(f"翻译文本已保存: {filename}")
+            self.logger.info(f"- 文件大小: {os.path.getsize(file_path) / 1024:.2f}KB")
+            
+            return file_path
+            
+        except Exception as e:
+            self.logger.error(f"保存翻译文本时出错: {str(e)}")
+            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
+            raise
+
+    def format_segments(self, segments: List[Tuple[str, float, float]]) -> str:
+        """格式化文本片段。
+        
+        Args:
+            segments: 文本片段列表，每个元素为(文本, 开始时间, 结束时间)
+            
+        Returns:
+            str: 格式化后的文本
+        """
+        try:
+            formatted_text = []
+            
+            for text, start_time, end_time in segments:
+                # 格式化时间戳
+                start_str = time.strftime('%M:%S', time.gmtime(start_time))
+                end_str = time.strftime('%M:%S', time.gmtime(end_time))
+                
+                # 添加格式化的行
+                formatted_text.append(f"[{start_str} - {end_str}] {text}")
+            
+            return '\n'.join(formatted_text)
+            
+        except Exception as e:
+            self.logger.error(f"格式化文本片段时出错: {str(e)}")
+            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
+            raise
 
 def extract_video_id(url: str) -> Optional[str]:
     """从YouTube URL中提取视频ID。
