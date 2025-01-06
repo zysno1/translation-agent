@@ -1025,23 +1025,35 @@ class YouTubeTranscriber:
         try:
             start_time = time.time()
             self.logger.info("开始合并翻译片段...")
-            merged_lines = []
             
+            # 保存时间戳映射
+            timestamp_map = {}
+            processed_segments = []
+            timestamp_count = 0
+            
+            # 处理每个段落
             for segment in segments:
-                # 将段落拆分成行
-                lines = segment.split('\n')
-                for line in lines:
-                    line = line.strip()
-                    if line:
-                        # 添加当前行
-                        merged_lines.append(line)
-                        # 如果是时间戳行，添加空行
-                        if re.match(r'\[\d{2}:\d{2} - \d{2}:\d{2}\]', line):
-                            merged_lines.append('')
+                # 替换时间戳为标记，并保存原始格式
+                def replace_timestamp(match):
+                    nonlocal timestamp_count
+                    mark = f"__TIMESTAMP_{timestamp_count}__"
+                    timestamp_map[mark] = match.group(0)
+                    timestamp_count += 1
+                    return mark
+                
+                processed_text = re.sub(r'\[\d{2}:\d{2} - \d{2}:\d{2}\]', replace_timestamp, segment)
+                processed_segments.append(processed_text)
+            
+            # 合并处理后的文本
+            merged_text = "\n".join(processed_segments)
+            
+            # 恢复时间戳并添加空行
+            for mark, timestamp in timestamp_map.items():
+                merged_text = merged_text.replace(mark, timestamp + "\n")
             
             end_time = time.time()
             self.logger.info(f"翻译片段合并完成，共 {len(segments)} 个片段，耗时 {end_time - start_time:.2f} 秒")
-            return '\n'.join(merged_lines).strip()
+            return merged_text.strip()
             
         except Exception as e:
             self.logger.error(f"合并翻译片段时出错: {str(e)}")
