@@ -1015,11 +1015,21 @@ class YouTubeTranscriber:
                     time.sleep(1)
             
             # 合并翻译结果
-            merged_text = "\n\n".join(translated_segments)
+            merged_text = "\n".join(translated_segments)
             
             # 恢复时间戳
             for mark, timestamp in timestamp_map.items():
                 merged_text = merged_text.replace(mark, timestamp)
+            
+            # 格式化：为每个带时间戳的行添加换行
+            formatted_lines = []
+            for line in merged_text.split('\n'):
+                if re.match(r'\[\d{2}:\d{2} - \d{2}:\d{2}\]', line.strip()):
+                    formatted_lines.append(line + '\n')
+                else:
+                    formatted_lines.append(line)
+            
+            merged_text = '\n'.join(formatted_lines)
             
             self.logger.info("文本翻译完成")
             return merged_text
