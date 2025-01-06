@@ -1015,7 +1015,7 @@ class YouTubeTranscriber:
                     time.sleep(1)
             
             # 合并翻译结果
-            merged_text = "\n".join(translated_segments)
+            merged_text = "\n\n".join(translated_segments)
             
             # 恢复时间戳
             for mark, timestamp in timestamp_map.items():
@@ -1042,11 +1042,11 @@ class YouTubeTranscriber:
             self.logger.info("开始合并翻译片段...")
             
             # 合并处理后的文本
-            merged_text = "\n".join(segments)
+            merged_text = "\n\n".join(segments)
             
             # 恢复时间戳并添加空行
             for mark, timestamp in self.timestamp_map.items():
-                merged_text = merged_text.replace(mark, timestamp + "\n")
+                merged_text = merged_text.replace(mark, timestamp + "\n\n")
             
             # 清理映射（为下次使用做准备）
             self.timestamp_map.clear()
@@ -1059,7 +1059,7 @@ class YouTubeTranscriber:
         except Exception as e:
             self.logger.error(f"合并翻译片段时出错: {str(e)}")
             self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
-            return "\n".join(segments)  # 出错时简单连接
+            return "\n\n".join(segments)  # 出错时简单连接
     
     def print_token_statistics(self) -> None:
         """打印令牌使用统计信息。"""
