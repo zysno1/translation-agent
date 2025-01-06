@@ -525,6 +525,9 @@ class YouTubeTranscriber:
         self.logger.info("开始处理视频...")
         
         try:
+            # 保存视频URL供后续使用
+            self.current_video_url = url
+            
             # 下载视频
             download_start = time.time()
             video_id, video_title, video_path = self.download_video(url)
@@ -563,7 +566,7 @@ class YouTubeTranscriber:
             
             # 保存原始文本
             save_original_start = time.time()
-            original_path = self.save_original_text(original_text, video_id)
+            original_path = self.save_original_text(original_text, video_id, video_title)
             save_original_duration = time.time() - save_original_start
             
             # 翻译文本
@@ -575,7 +578,7 @@ class YouTubeTranscriber:
             
             # 保存翻译文本
             save_translation_start = time.time()
-            final_path = self.save_translated_text(translated_text, video_id)
+            final_path = self.save_translated_text(translated_text, video_id, video_title)
             save_translation_duration = time.time() - save_translation_start
             
             # 清理资源
@@ -1429,54 +1432,6 @@ class YouTubeTranscriber:
         
         return paragraphs
 
-    def save_result(self, text: str) -> None:
-        """保存最终的处理结果
-        Args:
-            text: 要保存的文本内容
-        """
-        try:
-            # 检查输入
-            if not text or not text.strip():
-                self.logger.warning("保存的文本为空")
-                raise Exception("保存的文本为空")
-            
-            # 创建 transcripts 目录
-            transcripts_dir = "transcripts"
-            if not os.path.exists(transcripts_dir):
-                os.makedirs(transcripts_dir)
-            
-            # 生成安全的文件名
-            safe_title = re.sub(r'[<>:"/\\|?*]', '_', self.video_title)
-            output_file = os.path.join(transcripts_dir, f"{safe_title}.md")
-            
-            # 保存文本
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(f"# {self.video_title}\n\n")
-                f.write(text)
-            
-            self.logger.info(f"结果已保存到: {output_file}")
-            
-            # 如果启用了Git，提交更改
-            if os.path.exists('.git'):
-                try:
-                    # 添加文件到Git
-                    subprocess.run(['git', 'add', output_file], check=True)
-                    
-                    # 提交更改
-                    commit_message = f"添加转录文稿: {self.video_title}"
-                    subprocess.run(['git', 'commit', '-m', commit_message], check=True)
-                    
-                    self.logger.info("已提交到Git仓库")
-                    
-                except subprocess.CalledProcessError as e:
-                    self.logger.warning(f"Git操作失败: {str(e)}")
-                except Exception as e:
-                    self.logger.warning(f"Git提交失败: {str(e)}")
-            
-        except Exception as e:
-            self.logger.error(f"保存结果失败: {str(e)}")
-            raise Exception(f"保存结果失败: {str(e)}")
-
     def format_time(self, seconds: float) -> str:
         """格式化时间显示。
         
@@ -2264,103 +2219,72 @@ class YouTubeTranscriber:
             self.logger.error(error_msg)
             raise ValueError(error_msg)
 
-    def save_original_text(self, text: str, video_id: str) -> str:
-        """保存原始转写文本。
-        
+    def save_original_text(self, text: str, video_id: str, video_title: str) -> str:
+        """保存原始文本到markdown文件
         Args:
-            text: 要保存的文本
+            text: 原始文本
             video_id: 视频ID
-            
+            video_title: 视频标题
         Returns:
-            str: 保存的文件路径
+            保存的文件路径
         """
-        try:
-            # 生成文件名
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            video_title = self.current_video_title if hasattr(self, 'current_video_title') else video_id
-            filename = f"{timestamp}_{video_title}_original.md"
-            file_path = os.path.join(self.dirs['transcripts'], filename)
-            
-            # 构建文件内容
-            content = []
-            
-            # 添加元数据
-            content.append("---")
-            content.append("视频信息:")
-            content.append(f"  标题: {video_title}")
-            content.append(f"  ID: {video_id}")
-            if hasattr(self, 'current_video_duration'):
-                content.append(f"  时长: {self.format_duration(self.current_video_duration)}")
-            content.append(f"  语言: English -> Chinese")
-            content.append(f"  处理时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            content.append("---\n")
-            
-            # 添加内容
-            content.append("## 内容时间轴\n")
-            content.extend(text.split('\n'))
-            
-            # 保存文件
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(content))
-                
-            self.logger.info(f"原始转写文本已保存: {filename}")
-            self.logger.info(f"- 文件大小: {os.path.getsize(file_path) / 1024:.2f}KB")
-            
-            return file_path
-            
-        except Exception as e:
-            self.logger.error(f"保存原始转写文本时出错: {str(e)}")
-            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
-            raise
-            
-    def save_translated_text(self, text: str, video_id: str) -> str:
-        """保存翻译后的文本。
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{video_id}_original.md"
+        filepath = os.path.join(self.dirs['transcripts'], filename)
+
+        # 创建markdown文件内容
+        content = f"""# {video_title}
+
+## 视频信息
+- 视频ID: {video_id}
+- 视频标题: {video_title}
+- 视频URL: {self.current_video_url}
+
+## 原文
+{text}
+"""
+        # 保存文件
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
         
+        self.logger.info(f"原始转写文本已保存: {filename}")
+        self.logger.info(f"- 文件大小: {os.path.getsize(filepath) / 1024:.2f}KB")
+        
+        return filepath
+
+    def save_translated_text(self, text: str, video_id: str, video_title: str) -> str:
+        """保存翻译后的文本到markdown文件
         Args:
-            text: 要保存的文本
+            text: 翻译后的文本
             video_id: 视频ID
-            
+            video_title: 视频标题
         Returns:
-            str: 保存的文件路径
+            保存的文件路径
         """
-        try:
-            # 生成文件名
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            video_title = self.current_video_title if hasattr(self, 'current_video_title') else video_id
-            filename = f"{timestamp}_{video_title}_translated.md"
-            file_path = os.path.join(self.dirs['transcripts'], filename)
-            
-            # 构建文件内容
-            content = []
-            
-            # 添加元数据
-            content.append("---")
-            content.append("视频信息:")
-            content.append(f"  标题: {video_title}")
-            content.append(f"  ID: {video_id}")
-            if hasattr(self, 'current_video_duration'):
-                content.append(f"  时长: {self.format_duration(self.current_video_duration)}")
-            content.append(f"  语言: English -> Chinese")
-            content.append(f"  处理时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            content.append("---\n")
-            
-            # 添加内容
-            content.append("## 内容时间轴\n")
-            content.extend(text.split('\n'))
-            
-            # 保存文件
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(content))
-                
-            self.logger.info(f"翻译文本已保存: {filename}")
-            self.logger.info(f"- 文件大小: {os.path.getsize(file_path) / 1024:.2f}KB")
-            
-            return file_path
-            
-        except Exception as e:
-            self.logger.error(f"保存翻译文本时出错: {str(e)}")
-            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
-            raise
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{video_id}_translated.md"
+        filepath = os.path.join(self.dirs['transcripts'], filename)
+
+        # 创建markdown文件内容
+        content = f"""# {video_title}
+
+## 视频信息
+- 视频ID: {video_id}
+- 视频标题: {video_title}
+- 视频URL: {self.current_video_url}
+
+## 译文
+{text}
+"""
+
+        # 保存文件
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        self.logger.info(f"翻译文本已保存: {filename}")
+        self.logger.info(f"- 文件大小: {os.path.getsize(filepath) / 1024:.2f}KB")
+        
+        return filepath
             
     def format_duration(self, seconds: float) -> str:
         """格式化视频时长。

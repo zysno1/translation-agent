@@ -94,8 +94,8 @@ python src/youtube_transcriber.py --url "VIDEO_URL" --debug
 
 ## 输出文件
 
-- 原始转录文本：`transcripts/TIMESTAMP_TITLE_original.md`
-- 翻译后文本：`transcripts/TIMESTAMP_TITLE_final.md`
+- 原始转录文本：`transcripts/TIMESTAMP_VIDEO_ID_original.md`
+- 翻译后文本：`transcripts/TIMESTAMP_VIDEO_ID_translated.md`
 - 处理日志：`logs/transcriber_TIMESTAMP.log`
 
 ## 注意事项
