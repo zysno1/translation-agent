@@ -476,6 +476,10 @@ class YouTubeTranscriber:
         }
         self.total_tokens[self.asr_model] = 0
         
+        # 初始化时间戳映射
+        self.timestamp_map = {}
+        self.timestamp_count = 0
+        
         # 验证环境变量
         self.verify_env_variables()
 
@@ -612,18 +616,12 @@ class YouTubeTranscriber:
             sys.exit(1)  # 直接退出，不执行后续清理
 
     def split_text_for_translation(self, text: str, max_tokens: int = 800) -> List[str]:
-        """将文本分段用于翻译，确保不会切分句子
-        
-        Args:
-            text: 要分段的文本
-            max_tokens: 每段最大token数（预留空间给系统提示词）
-            
-        Returns:
-            List[str]: 分段后的文本列表
-        """
         try:
             start_time = time.time()
             self.logger.info("开始分段处理文本...")
+            # 添加这行日志
+            self.logger.debug(f"开始分段处理的文本:\n{text}")
+            
             segments = []
             current_segment = []
             current_length = 0  # 估算当前token数（按4个字符1个token计算）
@@ -634,13 +632,20 @@ class YouTubeTranscriber:
             for line in lines:
                 line = line.strip()
                 if not line:
+                    # 添加这行日志
+                    self.logger.debug(f"跳过空行")
                     continue
                     
                 # 解析时间戳和文本
                 match = re.match(r'(\[\d{2}:\d{2} - \d{2}:\d{2}\]) (.+)', line)
                 if not match:
+                    # 添加这行日志
+                    self.logger.debug(f"行未匹配时间戳格式: {line}")
                     continue
                     
+                # 添加这行日志
+                self.logger.debug(f"成功匹配行: {line}")
+                
                 timestamp, content = match.groups()
                 # 估算当前行的token数（每4个字符约1个token）
                 line_tokens = len(content) // 4 + 1  # +1 是时间戳的估算token数
@@ -925,6 +930,17 @@ class YouTubeTranscriber:
         try:
             request_id = str(uuid.uuid4())
             self.logger.info("开始翻译文本...")
+            self.logger.debug(f"待翻译的原始文本:\n{text}")
+            
+            # 定义时间戳替换函数和映射
+            timestamp_map = {}
+            timestamp_count = 0
+            def replace_timestamp(match):
+                nonlocal timestamp_count
+                mark = f"__TIMESTAMP_{timestamp_count}__"
+                timestamp_map[mark] = match.group(0)
+                timestamp_count += 1
+                return mark
             
             # 分段处理文本
             segments = self.split_text_for_translation(text)
@@ -942,19 +958,22 @@ class YouTubeTranscriber:
             for i, segment in enumerate(segments, 1):
                 self.logger.info(f"翻译第 {i}/{len(segments)} 个片段...")
                 
+                # 翻译前替换时间戳
+                segment_with_marks = re.sub(r'\[\d{2}:\d{2} - \d{2}:\d{2}\]', replace_timestamp, segment)
+                
                 # 构建请求消息
                 messages = [
                     {
                         "role": "user",
-                        "content": segment
+                        "content": segment_with_marks
                     }
                 ]
                 
                 # 构建翻译选项
                 translation_options = {
-                    "source_lang": "English",  # 源语言为英语
-                    "target_lang": "Chinese",  # 目标语言为中文
-                    "domains": "The text contains timestamps and specific formatting that should be preserved. Please maintain the original format including timestamps [MM:SS - MM:SS] at the beginning of each line. The content is from IT domain, involving computer-related software development and usage methods. Pay attention to professional terminologies and sentence patterns when translating."  # 领域提示和格式要求
+                    "source_lang": "English",
+                    "target_lang": "Chinese",
+                    "domains": "The text contains timestamps and specific formatting that should be preserved. Please maintain the original format including timestamps [MM:SS - MM:SS] at the beginning of each line. The content is from IT domain, involving computer-related software development and usage methods. Pay attention to professional terminologies and sentence patterns when translating."
                 }
                 
                 # 调用翻译API
@@ -996,10 +1015,14 @@ class YouTubeTranscriber:
                     time.sleep(1)
             
             # 合并翻译结果
-            final_text = self.merge_translated_segments(translated_segments)
+            merged_text = "\n".join(translated_segments)
+            
+            # 恢复时间戳
+            for mark, timestamp in timestamp_map.items():
+                merged_text = merged_text.replace(mark, timestamp)
             
             self.logger.info("文本翻译完成")
-            return final_text
+            return merged_text
             
         except Exception as e:
             self.logger.error(
@@ -1011,45 +1034,23 @@ class YouTubeTranscriber:
                     'stack_trace': traceback.format_exc()
                 }
             )
-            sys.exit(1)  # 翻译失败时直接退出
+            sys.exit(1)  # 保持原有的退出处理
     
     def merge_translated_segments(self, segments: List[str]) -> str:
-        """合并翻译后的文本片段。
-        
-        Args:
-            segments: 翻译后的文本片段列表
-            
-        Returns:
-            str: 合并后的文本
-        """
         try:
             start_time = time.time()
             self.logger.info("开始合并翻译片段...")
             
-            # 保存时间戳映射
-            timestamp_map = {}
-            processed_segments = []
-            timestamp_count = 0
-            
-            # 处理每个段落
-            for segment in segments:
-                # 替换时间戳为标记，并保存原始格式
-                def replace_timestamp(match):
-                    nonlocal timestamp_count
-                    mark = f"__TIMESTAMP_{timestamp_count}__"
-                    timestamp_map[mark] = match.group(0)
-                    timestamp_count += 1
-                    return mark
-                
-                processed_text = re.sub(r'\[\d{2}:\d{2} - \d{2}:\d{2}\]', replace_timestamp, segment)
-                processed_segments.append(processed_text)
-            
             # 合并处理后的文本
-            merged_text = "\n".join(processed_segments)
+            merged_text = "\n".join(segments)
             
             # 恢复时间戳并添加空行
-            for mark, timestamp in timestamp_map.items():
+            for mark, timestamp in self.timestamp_map.items():
                 merged_text = merged_text.replace(mark, timestamp + "\n")
+            
+            # 清理映射（为下次使用做准备）
+            self.timestamp_map.clear()
+            self.timestamp_count = 0
             
             end_time = time.time()
             self.logger.info(f"翻译片段合并完成，共 {len(segments)} 个片段，耗时 {end_time - start_time:.2f} 秒")
