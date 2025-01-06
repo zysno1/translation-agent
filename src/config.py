@@ -13,15 +13,14 @@ DIR_CONFIG = {
 MODEL_CONFIG = {
     # 语音识别模型配置
     'speech_recognition': {
-        'model': 'sensevoice-v1',  # 默认使用 sensevoice-v1
+        'model': 'paraformer-v2',  # 默认使用 paraformer-v2
         'timeout': 600,  # 请求超时时间（秒）
         'params': {
-            'format': 'wav',
-            'sample_rate': 16000,
-            'enable_timestamp': True,
-            'enable_punctuation': True,
             'channel_id': [0],  # 指定音轨ID，默认处理首轨
-            'language_hints': ['en']  # 语言提示，默认中文
+            'language_hints': ['en'],  # 语言提示，默认英语
+            'enable_timestamp': True,  # 启用时间戳
+            'enable_punctuation': True,  # 启用标点符号
+            'hot_words': None  # 热词功能，用于提高特定词汇的识别准确率
         },
         # 可用的语音识别模型
         'available_models': {
