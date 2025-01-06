@@ -2368,8 +2368,8 @@ class YouTubeTranscriber:
                 start_str = time.strftime('%M:%S', time.gmtime(start_time))
                 end_str = time.strftime('%M:%S', time.gmtime(end_time))
                 
-                # 添加带时间戳的文本，确保每段都有换行
-                formatted_text.append(f"[{start_str} - {end_str}] {text.strip()}\n")
+                # 添加带时间戳的文本，每段后添加空行
+                formatted_text.append(f"[{start_str} - {end_str}] {text.strip()}\n\n")
             
             return ''.join(formatted_text)
             
