@@ -1025,22 +1025,28 @@ class YouTubeTranscriber:
         try:
             start_time = time.time()
             self.logger.info("开始合并翻译片段...")
-            merged_text = ""
+            merged_lines = []
             
             for segment in segments:
-                # 确保片段之间有双空行
-                if merged_text and not merged_text.endswith('\n\n'):
-                    merged_text += '\n\n'
-                merged_text += segment.strip() + '\n\n'
+                # 将段落拆分成行
+                lines = segment.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if line:
+                        # 添加当前行
+                        merged_lines.append(line)
+                        # 如果是时间戳行，添加空行
+                        if re.match(r'\[\d{2}:\d{2} - \d{2}:\d{2}\]', line):
+                            merged_lines.append('')
             
             end_time = time.time()
             self.logger.info(f"翻译片段合并完成，共 {len(segments)} 个片段，耗时 {end_time - start_time:.2f} 秒")
-            return merged_text.strip()
+            return '\n'.join(merged_lines).strip()
             
         except Exception as e:
             self.logger.error(f"合并翻译片段时出错: {str(e)}")
             self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
-            return "\n\n".join(segments)  # 出错时简单连接，保持双空行
+            return "\n".join(segments)  # 出错时简单连接
     
     def print_token_statistics(self) -> None:
         """打印令牌使用统计信息。"""
