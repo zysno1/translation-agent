@@ -1028,10 +1028,10 @@ class YouTubeTranscriber:
             merged_text = ""
             
             for segment in segments:
-                # 确保片段之间有换行
-                if merged_text and not merged_text.endswith('\n'):
-                    merged_text += '\n'
-                merged_text += segment.strip() + '\n'
+                # 确保片段之间有双空行
+                if merged_text and not merged_text.endswith('\n\n'):
+                    merged_text += '\n\n'
+                merged_text += segment.strip() + '\n\n'
             
             end_time = time.time()
             self.logger.info(f"翻译片段合并完成，共 {len(segments)} 个片段，耗时 {end_time - start_time:.2f} 秒")
@@ -1040,7 +1040,7 @@ class YouTubeTranscriber:
         except Exception as e:
             self.logger.error(f"合并翻译片段时出错: {str(e)}")
             self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
-            return "\n".join(segments)  # 出错时简单连接
+            return "\n\n".join(segments)  # 出错时简单连接，保持双空行
     
     def print_token_statistics(self) -> None:
         """打印令牌使用统计信息。"""
