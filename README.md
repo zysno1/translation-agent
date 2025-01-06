@@ -1,53 +1,27 @@
 # YouTube 视频转录与翻译工具
 
-这是一个功能强大的 YouTube 视频转录和翻译工具，专门用于将 YouTube 视频内容转换为高质量的中文文本。本工具特别适合于 AI、机器学习系统(MLSys)、大语言模型(LLM) 和云原生领域的技术内容翻译。
+这是一个功能强大的 YouTube 视频转录和翻译工具，可以自动下载 YouTube 视频的音频，进行语音识别，并将识别结果翻译成中文。
 
-## 功能特性
+## 功能特点
 
-- 🎥 **视频处理**
-  - 支持单个视频或批量处理
-  - 自动提取视频音频
-  - 智能音频格式转换和优化
-
-- 🎯 **语音识别**
-  - 使用阿里云 Paraformer-v2 模型
-  - 支持时间戳标注
-  - 高精度的语音转文字
-
-- 🌐 **专业翻译**
-  - 使用阿里云通义千问翻译引擎
-  - 专注于技术领域翻译
-  - 保留专业术语的准确性
-  - 支持自定义术语表
-
-- 📝 **文本处理**
-  - Markdown 格式输出
-  - 自动段落分割
-  - 保留时间戳标记
-  - Git 版本控制集成
-
-- 🔄 **资源管理**
-  - 自动清理临时文件
-  - OSS 文件管理
-  - 历史日志管理
-
-- 📊 **详细日志**
-  - 完整的处理过程记录
-  - 调试模式支持
-  - 错误追踪和异常处理
-  - 成本估算和统计
+- 支持单个视频处理和批量处理
+- 自动下载 YouTube 视频音频
+- 使用阿里云语音识别服务进行转录
+- 使用通义千问进行高质量翻译
+- 支持断点续传和错误重试
+- 详细的日志记录和进度显示
+- 自动清理临时文件
 
 ## 环境要求
 
-- Python 3.8+
-- FFmpeg
-- 阿里云账号和相关服务访问权限
+- Python 3.8 或更高版本
+- FFmpeg（用于音频处理）
 
 ## 安装步骤
 
 1. 克隆仓库：
 ```bash
-git clone [repository-url]
+git clone [仓库地址]
 cd translation-agent
 ```
 
@@ -57,12 +31,13 @@ pip install -r requirements.txt
 ```
 
 3. 配置环境变量：
-创建 `.env` 文件并设置以下变量：
+创建 `.env` 文件并添加以下配置：
 ```
-OSS_ACCESS_KEY=你的OSS访问密钥
-OSS_ACCESS_SECRET=你的OSS访问密钥密文
-OSS_ENDPOINT=你的OSS访问端点
-OSS_BUCKET=你的OSS存储桶名称
+OSS_ACCESS_KEY=你的阿里云OSS访问密钥
+OSS_ACCESS_SECRET=你的阿里云OSS访问密钥密文
+OSS_ENDPOINT=你的阿里云OSS终端节点
+OSS_BUCKET=你的阿里云OSS存储桶名称
+DASHSCOPE_API_KEY=你的通义千问API密钥
 ```
 
 ## 使用方法
@@ -70,45 +45,49 @@ OSS_BUCKET=你的OSS存储桶名称
 ### 处理单个视频
 
 ```bash
-python src/youtube_transcriber.py --url "https://www.youtube.com/watch?v=VIDEO_ID"
+python src/youtube_transcriber.py --url https://www.youtube.com/watch?v=xxxxx
 ```
 
 ### 批量处理视频
 
+1. 创建包含视频URL的文本文件（每行一个URL）
+2. 运行命令：
 ```bash
-python src/youtube_transcriber.py --file "video_urls.txt"
+python src/youtube_transcriber.py --file video_urls.txt
 ```
 
-### 清理资源
+### 清理缓存文件
 
 ```bash
 python src/youtube_transcriber.py --clean
 ```
 
-### 启用调试模式
+### 调试模式
 
-添加 `--debug` 参数以获取详细日志：
 ```bash
-python src/youtube_transcriber.py --url "VIDEO_URL" --debug
+python src/youtube_transcriber.py --url https://www.youtube.com/watch?v=xxxxx --debug
 ```
 
 ## 输出文件
 
-- 原始转录文本：`transcripts/TIMESTAMP_VIDEO_ID_original.md`
-- 翻译后文本：`transcripts/TIMESTAMP_VIDEO_ID_translated.md`
-- 处理日志：`logs/transcriber_TIMESTAMP.log`
+程序会在 `transcripts` 目录下生成以下文件：
+- `*_original.md`: 原始英文转写文本
+- `*_translated.md`: 中文翻译文本
 
 ## 注意事项
 
 1. 确保有足够的磁盘空间用于临时文件
-2. 检查网络连接稳定性
-3. 注意 API 调用成本
-4. 定期清理历史日志和临时文件
+2. 需要稳定的网络连接
+3. 请确保已正确配置所有环境变量
+4. 处理长视频时可能需要较长时间
+5. 建议使用专业版通义千问API以获得更好的翻译质量
+
+## 错误处理
+
+- 如果遇到网络错误，程序会自动重试
+- 详细的错误日志保存在 `logs` 目录下
+- 使用 `--debug` 参数可以查看更详细的调试信息
 
 ## 许可证
 
-[许可证类型]
-
-## 贡献指南
-
-欢迎提交 Issue 和 Pull Request 
+MIT License 

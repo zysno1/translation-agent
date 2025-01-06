@@ -1,8 +1,8 @@
-dashscope>=1.13.3
 python-dotenv>=1.0.0
 yt-dlp>=2023.12.30
+dashscope>=1.13.6
 pydub>=0.25.1
-oss2>=2.18.3
 requests>=2.31.0
-pytube>=15.0.0
-typing>=3.7.4.3
+oss2>=2.18.3
+ffmpeg-python>=0.2.0
+python-ffmpeg>=2.0.5
