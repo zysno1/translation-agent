@@ -476,6 +476,12 @@ class YouTubeTranscriber:
         }
         self.total_tokens[self.asr_model] = 0
         
+        # 添加费用统计字典
+        self.total_costs = {
+            model: 0.0 for model in MODEL_CONFIG['translation']['available_models'].keys()
+        }
+        self.total_costs[self.asr_model] = 0.0
+        
         # 初始化时间戳映射
         self.timestamp_map = {}
         self.timestamp_count = 0
@@ -604,6 +610,9 @@ class YouTubeTranscriber:
             self.logger.info(f"• 文本翻译: {translation_duration:.2f} 秒")
             self.logger.info(f"• 保存翻译文本: {save_translation_duration:.2f} 秒")
             self.logger.info(f"• 资源清理: {cleanup_duration:.2f} 秒")
+            
+            # 输出费用统计
+            self.print_token_statistics()
             
             return {
                 "success": True,
@@ -790,15 +799,27 @@ class YouTubeTranscriber:
             
             # 更新总费用统计
             self.total_tokens[self.asr_model] = float(duration)
-
+            self.total_costs[self.asr_model] += duration * price_per_second
+            
+            # 计算实际成本
+            actual_cost = duration * price_per_second
+            self.logger.debug(
+                "语音识别任务统计",
+                extra={
+                    'service': 'ASR',
+                    'request_id': request_id,
+                    'parameters': {
+                        'audio_duration': f"{duration:.2f}秒",
+                        'actual_cost': f"¥{actual_cost:.4f}",
+                        'price_rate': f"¥{price_per_second}/秒"
+                    }
+                }
+            )
+            
             # 构建请求参数
-            request_params = model_config['params'].copy()
+            request_params = model_specific_config['api_params'].copy()
             request_params['model'] = self.asr_model
             request_params['file_urls'] = [file_url]
-            request_params['parameters'] = {
-                'format_tags': False,  # 关闭标签输出
-                'channel_id': [0]  # 指定音频通道
-            }
             
             # 记录请求参数
             self.logger.debug(
@@ -880,21 +901,6 @@ class YouTubeTranscriber:
                     'service': 'ASR',
                     'request_id': request_id,
                     'response': response.output
-                }
-            )
-            
-            # 计算实际成本
-            actual_cost = duration * price_per_second
-            self.logger.debug(
-                "语音识别任务统计",
-                extra={
-                    'service': 'ASR',
-                    'request_id': request_id,
-                    'parameters': {
-                        'audio_duration': f"{duration:.2f}秒",
-                        'actual_cost': f"¥{actual_cost:.4f}",
-                        'price_rate': f"¥{price_per_second}/秒"
-                    }
                 }
             )
             
@@ -993,9 +999,6 @@ class YouTubeTranscriber:
                     raise Exception(f"翻译API调用失败: {error_msg}")
                 
                 # 提取翻译结果
-                if not hasattr(response, 'output') or not response.output:
-                    raise Exception("API响应缺少output字段")
-                
                 if not hasattr(response.output, 'choices') or not response.output.choices:
                     raise Exception("API响应output缺少choices字段")
                 
@@ -1008,10 +1011,24 @@ class YouTubeTranscriber:
                 
                 translated_segments.append(translated_text)
                 
-                # 更新token统计
-                if hasattr(response, 'usage') and response.usage:
-                    total_tokens = response.usage.total_tokens
+                try:
+                    # 使用字符数估算token
+                    input_tokens = len(segment) // 4
+                    output_text = response.output.choices[0].message.content.strip()
+                    output_tokens = len(output_text) // 4
+                    
+                    # 更新统计
+                    total_tokens = input_tokens + output_tokens
                     self.total_tokens[self.translation_model] = float(total_tokens)
+                    
+                    # 计算翻译费用
+                    model_config = MODEL_CONFIG['translation']['available_models'][self.translation_model]
+                    input_cost = (input_tokens * model_config['input_price_per_1k_tokens']) / 1000
+                    output_cost = (output_tokens * model_config['output_price_per_1k_tokens']) / 1000
+                    self.total_costs[self.translation_model] += input_cost + output_cost
+                except Exception as e:
+                    self.logger.error(f"处理token统计时出错: {str(e)}")
+                    # 不中断翻译过程，继续处理下一个片段
                 
                 # 添加延迟，避免请求过快
                 if i < len(segments):
@@ -1035,6 +1052,13 @@ class YouTubeTranscriber:
             merged_text = '\n'.join(formatted_lines)
             
             self.logger.info("文本翻译完成")
+            
+            # 输出翻译统计信息
+            self.logger.info("翻译统计:")
+            self.logger.info(f"• 模型: {self.translation_model}")
+            self.logger.info(f"• Token用量: {self.total_tokens[self.translation_model]:.0f}")
+            self.logger.info(f"• 预估费用: ¥{self.total_costs[self.translation_model]:.4f}")
+            
             return merged_text
             
         except Exception as e:
@@ -1047,7 +1071,11 @@ class YouTubeTranscriber:
                     'stack_trace': traceback.format_exc()
                 }
             )
-            sys.exit(1)  # 保持原有的退出处理
+            # 返回已翻译的部分（如果有的话）
+            if translated_segments:
+                self.logger.warning(f"返回已翻译的 {len(translated_segments)} 个片段")
+                return self.merge_translated_segments(translated_segments)
+            raise  # 如果没有任何翻译结果，则抛出异常
     
     def merge_translated_segments(self, segments: List[str]) -> str:
         try:
@@ -1075,11 +1103,29 @@ class YouTubeTranscriber:
             return "\n\n".join(segments)  # 出错时简单连接
     
     def print_token_statistics(self) -> None:
-        """打印令牌使用统计信息。"""
-        self.logger.info("音频处理统计:")
+        """打印令牌使用和成本统计信息"""
+        self.logger.info("处理统计:")
+        
+        # ASR统计
+        asr_duration = self.total_tokens.get(self.asr_model, 0)
+        asr_cost = self.total_costs.get(self.asr_model, 0)
+        if asr_duration > 0:
+            self.logger.info(f"• 语音识别 ({self.asr_model}):")
+            self.logger.info(f"  - 处理时长: {asr_duration:.2f} 秒")
+            self.logger.info(f"  - 费用: ¥{asr_cost:.4f}")
+        
+        # 翻译统计
         for model, tokens in self.total_tokens.items():
-            self.logger.info(f"• {model}: {tokens} 秒")
-            
+            if model != self.asr_model and tokens > 0:
+                cost = self.total_costs.get(model, 0)
+                self.logger.info(f"• 文本翻译 ({model}):")
+                self.logger.info(f"  - Token数量: {tokens}")
+                self.logger.info(f"  - 费用: ¥{cost:.4f}")
+        
+        # 总费用
+        total_cost = sum(self.total_costs.values())
+        self.logger.info(f"总费用: ¥{total_cost:.4f}")
+    
     def cleanup_temp_files(self, video_id: str = None) -> None:
         """清理临时文件
         Args:

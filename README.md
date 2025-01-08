@@ -1,27 +1,30 @@
-# YouTube 视频转录与翻译工具
+# YouTube视频转录工具
 
-这是一个功能强大的 YouTube 视频转录和翻译工具，可以自动下载 YouTube 视频的音频，进行语音识别，并将识别结果翻译成中文。
+这是一个功能强大的YouTube视频转录工具，支持视频音频提取、语音识别、中文翻译等功能。
 
-## 功能特点
+## 主要功能
 
-- 支持单个视频处理和批量处理
-- 自动下载 YouTube 视频音频
-- 使用阿里云语音识别服务进行转录
-- 使用通义千问进行高质量翻译
-- 支持断点续传和错误重试
-- 详细的日志记录和进度显示
+- 支持单个视频和批量视频处理
+- 自动下载YouTube视频音频
+- 使用阿里云Paraformer-v2模型进行语音识别
+- 使用通义千问进行英译中翻译
+- 支持Token统计和费用计算
+- 详细的日志记录系统
 - 自动清理临时文件
+- 支持OSS文件存储
 
 ## 环境要求
 
-- Python 3.8 或更高版本
-- FFmpeg（用于音频处理）
+- Python 3.8+
+- FFmpeg
+- 阿里云账号（用于语音识别和翻译）
+- OSS存储空间
 
 ## 安装步骤
 
 1. 克隆仓库：
 ```bash
-git clone [仓库地址]
+git clone [repository_url]
 cd translation-agent
 ```
 
@@ -30,63 +33,101 @@ cd translation-agent
 pip install -r requirements.txt
 ```
 
-3. 配置环境变量：
+3. 安装FFmpeg：
+```bash
+# macOS
+brew install ffmpeg
+
+# Ubuntu/Debian
+sudo apt-get install ffmpeg
+
+# Windows
+# 请从官网下载并添加到系统PATH
+```
+
+4. 配置环境变量：
 创建 `.env` 文件并添加以下配置：
 ```
-OSS_ACCESS_KEY=你的阿里云OSS访问密钥
-OSS_ACCESS_SECRET=你的阿里云OSS访问密钥密文
-OSS_ENDPOINT=你的阿里云OSS终端节点
-OSS_BUCKET=你的阿里云OSS存储桶名称
-DASHSCOPE_API_KEY=你的通义千问API密钥
+OSS_ACCESS_KEY=your_access_key
+OSS_ACCESS_SECRET=your_access_secret
+OSS_ENDPOINT=your_endpoint
+OSS_BUCKET=your_bucket
+DASHSCOPE_API_KEY=your_api_key
 ```
 
-## 使用方法
+## 使用说明
 
-### 处理单个视频
-
+1. 处理单个视频：
 ```bash
 python src/youtube_transcriber.py --url https://www.youtube.com/watch?v=xxxxx
 ```
 
-### 批量处理视频
-
-1. 创建包含视频URL的文本文件（每行一个URL）
-2. 运行命令：
+2. 批量处理视频：
 ```bash
 python src/youtube_transcriber.py --file video_urls.txt
 ```
 
-### 清理缓存文件
-
+3. 清理缓存：
 ```bash
 python src/youtube_transcriber.py --clean
 ```
 
-### 调试模式
-
+4. 调试模式：
 ```bash
 python src/youtube_transcriber.py --url https://www.youtube.com/watch?v=xxxxx --debug
 ```
 
 ## 输出文件
 
-程序会在 `transcripts` 目录下生成以下文件：
-- `*_original.md`: 原始英文转写文本
-- `*_translated.md`: 中文翻译文本
+- `transcripts/`: 存放转写和翻译结果
+- `logs/`: 存放详细的运行日志
+  - `info_{timestamp}.log`: 程序运行日志
+  - `error_{timestamp}.log`: 错误日志
+  - `debug_{timestamp}.log`: 调试日志
+  - `asr_{timestamp}.log`: 语音识别日志
+  - `translate_{timestamp}.log`: 翻译日志
+
+## 高级功能
+
+### 费用统计
+- 自动统计语音识别和翻译的Token使用量
+- 计算处理成本
+- 支持费用预警
+
+### 错误处理
+- 自动重试机制
+- 详细的错误日志
+- 断点续传支持
+
+### 格式化输出
+- Markdown格式输出
+- 时间戳对齐
+- 分段处理长文本
+
+## 配置说明
+
+### 语音识别配置
+- 模型：Paraformer-v2
+- 采样率：16kHz
+- 声道：单声道
+
+### 翻译配置
+- 模型：通义千问系列
+- 支持批量翻译
+- 自动分段处理
+
+### OSS配置
+- 支持临时文件自动清理
+- 文件访问URL过期时间可配置
+- 支持自定义存储路径
 
 ## 注意事项
 
-1. 确保有足够的磁盘空间用于临时文件
+1. 请确保有足够的磁盘空间
 2. 需要稳定的网络连接
-3. 请确保已正确配置所有环境变量
-4. 处理长视频时可能需要较长时间
-5. 建议使用专业版通义千问API以获得更好的翻译质量
-
-## 错误处理
-
-- 如果遇到网络错误，程序会自动重试
-- 详细的错误日志保存在 `logs` 目录下
-- 使用 `--debug` 参数可以查看更详细的调试信息
+3. 注意API调用限制和费用
+4. 定期清理临时文件
+5. 遵守YouTube使用条款
 
 ## 许可证
 

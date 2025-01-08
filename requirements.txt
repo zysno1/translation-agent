@@ -1,8 +1,9 @@
+pydub>=0.25.1
 python-dotenv>=1.0.0
 yt-dlp>=2023.12.30
 dashscope>=1.13.6
-pydub>=0.25.1
-requests>=2.31.0
 oss2>=2.18.3
 ffmpeg-python>=0.2.0
-python-ffmpeg>=2.0.5
+requests>=2.31.0
+typing>=3.7.4.3
+concurrent-futures>=3.0.5

@@ -15,7 +15,7 @@ MODEL_CONFIG = {
     'speech_recognition': {
         'model': 'paraformer-v2',  # 默认使用 paraformer-v2
         'timeout': 600,  # 请求超时时间（秒）
-        'params': {
+        'api_params': {
             'channel_id': [0],  # 指定音轨ID，默认处理首轨
             'language_hints': ['en'],  # 语言提示，默认英语
             'enable_timestamp': True,  # 启用时间戳
@@ -160,7 +160,7 @@ MODEL_CONFIG = {
         'batch_size': 12,  # 批量翻译时每批的段落数
         'max_chars_per_segment': 2000,  # 单次翻译的最大字符数
         'retry_delay': 2,  # 批次间延迟（秒）
-        'params': {
+        'api_params': {
             'translation_options': {
                 'source_lang': 'English',  # 默认源语言
                 'target_lang': 'Chinese',  # 默认目标语言
@@ -197,7 +197,7 @@ MODEL_CONFIG = {
         'batch_size': 12,  # 批量处理时每批的段落数
         'max_chars_per_segment': 2000,  # 单次处理的最大字符数
         'retry_delay': 2,  # 批次间延迟（秒）
-        'params': {
+        'api_params': {
             'result_format': 'message',
             'temperature': 0.7,
             'top_p': 0.8,
