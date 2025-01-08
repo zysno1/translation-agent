@@ -1,3 +1,19 @@
+# 忽略生成的转录文件
+transcripts/*
+!transcripts/.gitkeep
+
+# 忽略临时文件
+temp/*
+!temp/.gitkeep
+
+# 忽略日志文件
+logs/*
+!logs/.gitkeep
+
+# 忽略输出文件
+output/*
+!output/.gitkeep
+
 # Python
 __pycache__/
 *.py[cod]
@@ -16,14 +32,9 @@ lib64/
 parts/
 sdist/
 var/
-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
-# Virtual Environment
-venv/
-ENV/
 
 # IDE
 .idea/
@@ -31,13 +42,12 @@ ENV/
 *.swp
 *.swo
 
-# Project specific
+# 环境文件
 .env
-output/
-temp/
-logs/
-*.wav
-transcript*.txt
-audio_*.wav
+.venv
+venv/
+ENV/
 
-# History data
+# 操作系统
+.DS_Store
+Thumbs.db
