@@ -1,6 +1,3 @@
-# 忽略生成的转录文件
-transcripts/*
-!transcripts/.gitkeep
 
 # 忽略临时文件
 temp/*
