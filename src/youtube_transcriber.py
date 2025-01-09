@@ -2285,6 +2285,7 @@ class YouTubeTranscriber:
 - 视频ID: {video_id}
 - 视频标题: {video_title}
 - 视频URL: {self.current_video_url}
+- 时间长度: {self.format_duration(self.current_video_duration)}
 
 ## 原文
 {text}
@@ -2318,6 +2319,7 @@ class YouTubeTranscriber:
 - 视频ID: {video_id}
 - 视频标题: {video_title}
 - 视频URL: {self.current_video_url}
+- 时间长度: {self.format_duration(self.current_video_duration)}
 
 ## 译文
 {text}
