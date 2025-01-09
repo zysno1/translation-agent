@@ -232,9 +232,10 @@ class ProgressTracker:
         ProcessStep("提取音频", 15, "下载和提取音频"),
         ProcessStep("处理音频", 5, "音频格式转换"),
         ProcessStep("上传音频", 10, "上传到OSS"),
-        ProcessStep("语音识别", 40, "转写音频内容"),  # 增加语音识别的权重
+        ProcessStep("语音识别", 40, "转写音频内容"),
         ProcessStep("翻译文本", 20, "翻译为中文"),
         ProcessStep("优化文本", 5, "优化文本格式"),
+        ProcessStep("内容总结", 5, "生成内容总结"),  # 新增
         ProcessStep("保存结果", 5, "保存最终结果")
     ]
     
@@ -385,11 +386,10 @@ class YouTubeTranscriber:
     
     # 定义文件命名模板
     FILE_TEMPLATES = {
-        'log': '{timestamp}_transcriber.log',  # 日志文件
-        'audio': '{timestamp}_{video_id}.mp3',  # 音频文件
-        'original': '{timestamp}_{video_id}_original.txt',  # 原始英文转写
-        'translated': '{timestamp}_{video_id}_translated.txt',  # 翻译后的中文
-        'final': '{timestamp}_{video_id}_final.txt'  # 最终优化后的文本
+        'log': 'log_{timestamp}.txt',
+        'audio': '{video_id}.wav',
+        'transcript': '{timestamp}_{video_id}_original.md',
+        'transcript_summary': '{timestamp}_{video_id}_summary.md'  # 新增
     }
     
     # 翻译的提示词
@@ -438,7 +438,8 @@ class YouTubeTranscriber:
     PRICE_PER_1K_TOKENS = {
         'qwen-plus': 0.1,  # 通义千问-Plus 模型价格
         'qwen-turbo': 0.008,  # 通义千问-Turbo 模型价格
-        'qwen-max': 0.2  # 通义千问-Max 模型价格
+        'qwen-max': 0.2,  # 通义千问-Max 模型价格
+        'qwen-plus-summary': 0.1  # 新增
     }
 
     def __init__(self, debug: bool = False):
@@ -462,9 +463,13 @@ class YouTubeTranscriber:
         # 设置日志记录器
         self.setup_logging(debug)
         
+        # 初始化进度跟踪器
+        self.progress_tracker = ProgressTracker(self.logger)
+        
         # 初始化其他配置
         self.temp_files = []
         self.output_files = []
+        self.config = {'enable_summary': True}  # 添加默认配置
         
         # 从配置文件获取模型信息
         self.asr_model = MODEL_CONFIG['speech_recognition']['model']
@@ -472,19 +477,27 @@ class YouTubeTranscriber:
         
         # 初始化费用统计
         self.total_tokens = {
-            model: 0 for model in MODEL_CONFIG['translation']['available_models'].keys()
+            'paraformer-v2': 0.0,
+            'qwen-mt-plus': 0.0,    # 修改为翻译模型的实际名称
+            'qwen-mt-turbo': 0.0,   # 修改为翻译模型的实际名称
+            'qwen-plus-summary': 0.0
         }
-        self.total_tokens[self.asr_model] = 0
-        
-        # 添加费用统计字典
         self.total_costs = {
-            model: 0.0 for model in MODEL_CONFIG['translation']['available_models'].keys()
+            'paraformer-v2': 0.0,
+            'qwen-mt-plus': 0.0,    # 修改为翻译模型的实际名称
+            'qwen-mt-turbo': 0.0,   # 修改为翻译模型的实际名称
+            'qwen-plus-summary': 0.0
         }
-        self.total_costs[self.asr_model] = 0.0
         
         # 初始化时间戳映射
         self.timestamp_map = {}
         self.timestamp_count = 0
+        
+        # 初始化视频相关属性
+        self.current_video_url = None
+        self.current_video_id = None
+        self.current_video_title = None
+        self.current_video_duration = None
         
         # 验证环境变量
         self.verify_env_variables()
@@ -537,6 +550,8 @@ class YouTubeTranscriber:
             # 下载视频
             download_start = time.time()
             video_id, video_title, video_path = self.download_video(url)
+            self.current_video_id = video_id  # 保存视频ID
+            self.current_video_title = video_title  # 保存视频标题
             download_duration = time.time() - download_start
             
             # 提取音频
@@ -587,9 +602,21 @@ class YouTubeTranscriber:
             final_path = self.save_translated_text(translated_text, video_id, video_title)
             save_translation_duration = time.time() - save_translation_start
             
-            # 清理资源
+            # 生成内容总结
+            if self.config.get('enable_summary', True):
+                try:
+                    self.progress_tracker.start_step("内容总结")
+                    summary_path = self.generate_content_summary(final_path)
+                    if summary_path:
+                        self.logger.info(f"Generated content summary: {summary_path}")
+                    self.progress_tracker.complete_step()
+                except Exception as e:
+                    self.logger.error(f"Content summary generation failed: {str(e)}")
+                    self.progress_tracker.complete_step()  # 确保在出错时也完成步骤
+            
+            # 清理临时文件
             cleanup_start = time.time()
-            self.clean_resources(audio_path)
+            self.cleanup_temp_files()  # 修正方法名
             cleanup_duration = time.time() - cleanup_start
             
             # 计算总耗时
@@ -2378,6 +2405,65 @@ class YouTubeTranscriber:
             self.logger.error(f"格式化文本片段时出错: {str(e)}")
             self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
             raise
+
+    @log_service_call(service='ContentSummary', api='generate')
+    def generate_content_summary(self, transcript_path: str) -> Optional[str]:
+        """生成内容总结"""
+        summary_config = MODEL_CONFIG['content_summary']
+        
+        # 读取转写文本
+        with open(transcript_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        # 调用模型生成总结
+        response = Generation.call(
+            model=summary_config['model'],
+            prompt=content,
+            **summary_config['api_params']
+        )
+        
+        if response.status_code == HTTPStatus.OK:
+            # 生成新文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{timestamp}_{self.current_video_id}_summary.md"
+            summary_path = os.path.join(self.dirs['transcripts'], filename)
+            
+            # 构建markdown内容
+            output_text = f"""# {self.current_video_title}
+
+## 视频信息
+- 视频ID: {self.current_video_id}
+- 视频标题: {self.current_video_title}
+- 视频URL: {self.current_video_url}
+- 时间长度: {self.format_duration(self.current_video_duration)}
+
+## 内容总结
+{response.output.text}
+"""
+            # 保存文件
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write(output_text)
+            
+            # 使用字符数估算token
+            input_tokens = len(content) // 4
+            output_tokens = len(output_text) // 4
+
+            # 更新统计
+            total_tokens = input_tokens + output_tokens
+            self.total_tokens['qwen-plus-summary'] = float(total_tokens)
+
+            # 计算费用
+            model_config = MODEL_CONFIG['content_summary']['available_models']['qwen-plus']
+            input_cost = (input_tokens * model_config['input_price_per_1k_tokens']) / 1000
+            output_cost = (output_tokens * model_config['output_price_per_1k_tokens']) / 1000
+            self.total_costs['qwen-plus-summary'] += input_cost + output_cost
+            
+            # 记录文件信息
+            self.logger.info(f"内容总结已保存: {filename}")
+            self.logger.info(f"- 文件大小: {os.path.getsize(summary_path) / 1024:.2f}KB")
+                
+            return summary_path
+        return None
 
 def extract_video_id(url: str) -> Optional[str]:
     """从YouTube URL中提取视频ID。

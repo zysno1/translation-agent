@@ -222,6 +222,31 @@ MODEL_CONFIG = {
         }
     },
     
+    # 内容总结模型配置
+    'content_summary': {
+        'model': 'qwen-plus',
+        'timeout': 300,
+        'batch_size': 1,
+        'max_chars_per_segment': 8000,
+        'retry_delay': 2,
+        'api_params': {
+            'result_format': 'json',
+            'temperature': 0,
+            'top_p': 1,
+            'enable_search': False,
+            'prompt_template': 'Please analyze the following transcript and provide a structured summary based on the content type (technical sharing, academic training, or industry keynote). Include key points and insights while maintaining the original structure and technical accuracy.'
+        },
+        'available_models': {
+            'qwen-plus': {
+                'description': '通义千问-Plus 模型',
+                'max_tokens': 131072,
+                'input_price_per_1k_tokens': 0.0008,
+                'output_price_per_1k_tokens': 0.002,
+                'features': ['内容分类', '结构化总结', 'JSON输出']
+            }
+        }
+    },
+    
     # 支持的语言列表
     'supported_languages': {
         'Chinese': '中文',
