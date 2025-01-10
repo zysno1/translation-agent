@@ -236,6 +236,101 @@ MODEL_CONFIG = {
             'enable_search': False,
             'prompt_template': 'Please analyze the following transcript and provide a structured summary based on the content type (technical sharing, academic training, or industry keynote). Include key points and insights while maintaining the original structure and technical accuracy.'
         },
+        'content_types': {
+            'technical_sharing': {
+                'name': '技术演讲',
+                'keywords': ['架构', '实现', '技术栈', '源码', '性能优化', '工程实践', 'demo', '部署', '开发', '框架'],
+                'template': """作为技术演讲内容分析专家，请对以下技术分享进行专业的分析和总结：
+
+1. 技术架构
+   - 系统设计和技术选型
+   - 核心组件和关键模块
+   - 技术栈组成
+   - 性能指标和优化方案
+
+2. 实现细节
+   - 关键算法和数据结构
+   - 核心代码实现
+   - 工程化实践
+   - 部署和运维考虑
+
+3. 技术创新
+   - 创新点和突破
+   - 技术难点解决
+   - 性能优化方案
+   - 工程化改进
+
+4. 最佳实践
+   - 工程实践经验
+   - 踩坑避坑指南
+   - 性能调优建议
+   - 可扩展性设计
+
+请生成一份专业、实用的技术分享总结。"""
+            },
+            'academic_sharing': {
+                'name': '学术分享',
+                'keywords': ['论文', '研究', '实验', '数据集', '模型', '算法', '理论', '方法论', '创新', '贡献'],
+                'template': """作为学术内容分析专家，请对以下学术分享进行专业的分析和总结：
+
+1. 研究背景
+   - 研究领域概述
+   - 现有工作分析
+   - 问题和挑战
+   - 研究动机
+
+2. 方法论
+   - 理论基础
+   - 算法设计
+   - 模型架构
+   - 创新点分析
+
+3. 实验验证
+   - 实验设计
+   - 数据集说明
+   - 评估指标
+   - 对比实验
+
+4. 研究成果
+   - 实验结果
+   - 性能分析
+   - 优势劣势
+   - 未来工作
+
+请生成一份严谨、专业的学术分享总结。"""
+            },
+            'keynote_speech': {
+                'name': '主题演讲',
+                'keywords': ['趋势', '展望', '战略', '生态', '产业', '未来', '规划', '愿景', '机遇', '挑战'],
+                'template': """作为技术趋势分析专家，请对以下主题演讲进行专业的分析和总结：
+
+1. 主题洞察
+   - 核心观点
+   - 趋势分析
+   - 机遇挑战
+   - 战略思考
+
+2. 技术演进
+   - 技术发展路线
+   - 创新突破点
+   - 技术生态
+   - 应用场景
+
+3. 产业影响
+   - 行业变革
+   - 商业模式
+   - 市场机会
+   - 发展方向
+
+4. 实践指导
+   - 落地建议
+   - 实施路径
+   - 风险防范
+   - 资源准备
+
+请生成一份有洞察、有深度的主题演讲总结。"""
+            }
+        },
         'available_models': {
             'qwen-plus': {
                 'description': '通义千问-Plus 模型',

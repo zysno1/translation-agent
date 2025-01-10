@@ -2442,44 +2442,14 @@ class YouTubeTranscriber:
                 return None
 
         try:
-            # 构建系统提示词
-            system_prompt = """作为一个专业的技术内容分析专家，请对以下内容进行全面的分析和总结。要求：
-
-1. 内容结构
-   - 提供清晰的层级结构（使用 ###、#### 等标记）
-   - 按时间顺序或逻辑顺序组织内容
-   - 每个主要部分后提供简短的要点总结
-
-2. 技术细节
-   - 详细分析技术架构和实现方案
-   - 提供具体的技术指标和性能数据
-   - 说明技术选型的原因和考虑因素
-   - 分析技术难点和解决方案
-
-3. 业务价值
-   - 分析产品的市场定位和竞争优势
-   - 总结关键的业务指标和成果
-   - 评估商业模式和盈利潜力
-   - 分析用户价值和产品特色
-
-4. 经验总结
-   - 提炼可复制的经验和教训
-   - 总结团队管理和项目执行的要点
-   - 分析成功因素和潜在风险
-   - 提供建议和改进方向
-
-5. 格式要求
-   - 使用 Markdown 格式
-   - 合理使用表格、引用和列表
-   - 添加分隔线区分主题
-   - 保持排版整洁美观
-
-请基于以上要求，生成一份专业、全面、结构清晰的内容总结。"""
+            # 检测内容类型
+            content_type = self.detect_content_type(content)
+            template = MODEL_CONFIG['content_summary']['content_types'][content_type]['template']
 
             # 调用模型生成总结
             response = Generation.call(
                 model=summary_config['model'],
-                prompt=f"{system_prompt}\n\n{content}",
+                prompt=f"{template}\n\n{content}",
                 **summary_config['api_params']
             )
             
@@ -2494,7 +2464,6 @@ class YouTubeTranscriber:
 
 ## 基本信息
 - 视频ID: {self.current_video_id}
-- 视频标题: {self.current_video_title}
 - 视频URL: {self.current_video_url}
 - 时间长度: {self.format_duration(self.current_video_duration)}
 
@@ -2550,6 +2519,32 @@ class YouTubeTranscriber:
             self.logger.error(f"生成内容总结时出错: {str(e)}")
             self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
             return None
+
+    def detect_content_type(self, content: str) -> str:
+        """检测内容类型
+        
+        Args:
+            content: 要分析的内容文本
+            
+        Returns:
+            str: 检测到的内容类型 ('technical_sharing', 'academic_sharing', 'keynote_speech')
+        """
+        content_types = MODEL_CONFIG['content_summary']['content_types']
+        
+        # 统计关键词出现频率
+        type_scores = {}
+        for content_type, config in content_types.items():
+            score = sum(1 for keyword in config['keywords'] 
+                       if keyword in content.lower())
+            type_scores[content_type] = score
+        
+        # 获取得分最高的类型
+        detected_type = max(type_scores.items(), key=lambda x: x[1])[0]
+        
+        self.logger.info(f"内容类型检测结果: {content_types[detected_type]['name']}")
+        self.logger.debug(f"类型得分统计: {type_scores}")
+        
+        return detected_type
 
 def extract_video_id(url: str) -> Optional[str]:
     """从YouTube URL中提取视频ID。
