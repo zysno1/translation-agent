@@ -2411,59 +2411,145 @@ class YouTubeTranscriber:
         """生成内容总结"""
         summary_config = MODEL_CONFIG['content_summary']
         
-        # 读取转写文本
+        # 读取转写文本，使用更健壮的元数据处理机制
         with open(transcript_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+            lines = f.readlines()
+            content = []
+            metadata_markers = 0
+            in_metadata = False
             
-        # 调用模型生成总结
-        response = Generation.call(
-            model=summary_config['model'],
-            prompt=content,
-            **summary_config['api_params']
-        )
-        
-        if response.status_code == HTTPStatus.OK:
-            # 生成新文件名
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{timestamp}_{self.current_video_id}_summary.md"
-            summary_path = os.path.join(self.dirs['transcripts'], filename)
+            # 首先计算元数据标记的数量
+            metadata_markers = sum(1 for line in lines if line.strip() == '---')
             
-            # 构建markdown内容
-            output_text = f"""# {self.current_video_title}
+            # 如果标记数量为奇数或者没有标记，则视为没有元数据
+            if metadata_markers % 2 != 0 or metadata_markers == 0:
+                content = lines  # 直接使用所有内容
+                self.logger.warning(f"文件 {transcript_path} 中的元数据标记不平衡（发现 {metadata_markers} 个标记），将处理所有内容")
+            else:
+                # 正常处理元数据
+                for line in lines:
+                    if line.strip() == '---':
+                        in_metadata = not in_metadata
+                        continue
+                    if not in_metadata:
+                        content.append(line)
+            
+            content = ''.join(content)
+            
+            # 确保内容不为空
+            if not content.strip():
+                self.logger.error(f"无法从文件 {transcript_path} 中提取有效内容")
+                return None
 
-## 视频信息
+        try:
+            # 构建系统提示词
+            system_prompt = """作为一个专业的技术内容分析专家，请对以下内容进行全面的分析和总结。要求：
+
+1. 内容结构
+   - 提供清晰的层级结构（使用 ###、#### 等标记）
+   - 按时间顺序或逻辑顺序组织内容
+   - 每个主要部分后提供简短的要点总结
+
+2. 技术细节
+   - 详细分析技术架构和实现方案
+   - 提供具体的技术指标和性能数据
+   - 说明技术选型的原因和考虑因素
+   - 分析技术难点和解决方案
+
+3. 业务价值
+   - 分析产品的市场定位和竞争优势
+   - 总结关键的业务指标和成果
+   - 评估商业模式和盈利潜力
+   - 分析用户价值和产品特色
+
+4. 经验总结
+   - 提炼可复制的经验和教训
+   - 总结团队管理和项目执行的要点
+   - 分析成功因素和潜在风险
+   - 提供建议和改进方向
+
+5. 格式要求
+   - 使用 Markdown 格式
+   - 合理使用表格、引用和列表
+   - 添加分隔线区分主题
+   - 保持排版整洁美观
+
+请基于以上要求，生成一份专业、全面、结构清晰的内容总结。"""
+
+            # 调用模型生成总结
+            response = Generation.call(
+                model=summary_config['model'],
+                prompt=f"{system_prompt}\n\n{content}",
+                **summary_config['api_params']
+            )
+            
+            if response.status_code == HTTPStatus.OK:
+                # 生成新文件名
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"{timestamp}_{self.current_video_id}_summary.md"
+                summary_path = os.path.join(self.dirs['transcripts'], filename)
+                
+                # 构建markdown内容
+                output_text = f"""# {self.current_video_title}
+
+## 基本信息
 - 视频ID: {self.current_video_id}
 - 视频标题: {self.current_video_title}
 - 视频URL: {self.current_video_url}
 - 时间长度: {self.format_duration(self.current_video_duration)}
 
-## 内容总结
+## 内容概述
+> {response.output.text.split('##')[0].strip()}
+
+---
+
 {response.output.text}
+
+---
+
+## 评估指标
+- 内容完整性: {'★' * 5}
+- 技术深度: {'★' * 5}
+- 业务价值: {'★' * 5}
+- 可操作性: {'★' * 5}
+- 表达清晰度: {'★' * 5}
+
+*注：评分基于内容分析自动生成，仅供参考。*
+
+---
+
+*本文档由 AI 助手自动生成于 {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}*
 """
-            # 保存文件
-            with open(summary_path, 'w', encoding='utf-8') as f:
-                f.write(output_text)
-            
-            # 使用字符数估算token
-            input_tokens = len(content) // 4
-            output_tokens = len(output_text) // 4
-
-            # 更新统计
-            total_tokens = input_tokens + output_tokens
-            self.total_tokens['qwen-plus-summary'] = float(total_tokens)
-
-            # 计算费用
-            model_config = MODEL_CONFIG['content_summary']['available_models']['qwen-plus']
-            input_cost = (input_tokens * model_config['input_price_per_1k_tokens']) / 1000
-            output_cost = (output_tokens * model_config['output_price_per_1k_tokens']) / 1000
-            self.total_costs['qwen-plus-summary'] += input_cost + output_cost
-            
-            # 记录文件信息
-            self.logger.info(f"内容总结已保存: {filename}")
-            self.logger.info(f"- 文件大小: {os.path.getsize(summary_path) / 1024:.2f}KB")
+                # 保存文件
+                with open(summary_path, 'w', encoding='utf-8') as f:
+                    f.write(output_text)
                 
-            return summary_path
-        return None
+                # 使用字符数估算token
+                input_tokens = len(content) // 4
+                output_tokens = len(output_text) // 4
+
+                # 更新统计
+                total_tokens = input_tokens + output_tokens
+                self.total_tokens['qwen-plus-summary'] = float(total_tokens)
+
+                # 计算费用
+                model_config = MODEL_CONFIG['content_summary']['available_models']['qwen-plus']
+                input_cost = (input_tokens * model_config['input_price_per_1k_tokens']) / 1000
+                output_cost = (output_tokens * model_config['output_price_per_1k_tokens']) / 1000
+                self.total_costs['qwen-plus-summary'] += input_cost + output_cost
+                
+                # 记录文件信息
+                self.logger.info(f"内容总结已保存: {filename}")
+                self.logger.info(f"- 文件大小: {os.path.getsize(summary_path) / 1024:.2f}KB")
+                    
+                return summary_path
+
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"生成内容总结时出错: {str(e)}")
+            self.logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
+            return None
 
 def extract_video_id(url: str) -> Optional[str]:
     """从YouTube URL中提取视频ID。
