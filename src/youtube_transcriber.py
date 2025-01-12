@@ -497,7 +497,8 @@ class YouTubeTranscriber:
         self.current_video_url = None
         self.current_video_id = None
         self.current_video_title = None
-        self.current_video_duration = None
+        self.current_video_duration = 0
+        self.original_text = None  # 添加原始文本属性
         
         # 验证环境变量
         self.verify_env_variables()
@@ -583,6 +584,7 @@ class YouTubeTranscriber:
             original_text = self.format_segments(segments)
             if not original_text:
                 raise Exception("文本格式化失败")
+            self.original_text = original_text  # 保存原始文本
             format_duration = time.time() - format_start
             
             # 保存原始文本
@@ -2336,8 +2338,18 @@ class YouTubeTranscriber:
             保存的文件路径
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_{video_id}_translated.md"
+        filename = f"{timestamp}_{video_id}_bilingual.md"
         filepath = os.path.join(self.dirs['transcripts'], filename)
+
+        # 获取原文文本
+        original_lines = []
+        translated_lines = []
+        
+        # 分别提取原文和译文的行
+        for orig, trans in zip(self.original_text.split('\n\n'), text.split('\n\n')):
+            if orig and trans:
+                original_lines.append(orig.strip())
+                translated_lines.append(trans.strip())
 
         # 创建markdown文件内容
         content = f"""# {video_title}
@@ -2348,15 +2360,26 @@ class YouTubeTranscriber:
 - 视频URL: {self.current_video_url}
 - 时间长度: {self.format_duration(self.current_video_duration)}
 
-## 译文
-{text}
+## 双语对照
 """
+        # 添加双语对照内容
+        for orig, trans in zip(original_lines, translated_lines):
+            # 提取时间戳（如果存在）
+            timestamp = ""
+            if orig.startswith('['):
+                timestamp = orig.split(']')[0] + ']'
+                orig = orig.split(']')[1].strip()
+                trans = trans.split(']')[1].strip() if trans.startswith('[') else trans
+
+            if timestamp:
+                content += f"\n{timestamp}\n"
+            content += f"原文：{orig}\n译文：{trans}\n\n"
 
         # 保存文件
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(content)
         
-        self.logger.info(f"翻译文本已保存: {filename}")
+        self.logger.info(f"双语对照文本已保存: {filename}")
         self.logger.info(f"- 文件大小: {os.path.getsize(filepath) / 1024:.2f}KB")
         
         return filepath
@@ -2390,16 +2413,34 @@ class YouTubeTranscriber:
         """
         try:
             formatted_text = []
+            current_section = 1
+            section_content = []
             
-            for text, start_time, end_time in segments:
+            for i, (text, start_time, end_time) in enumerate(segments):
                 # 格式化时间戳
                 start_str = time.strftime('%M:%S', time.gmtime(start_time))
                 end_str = time.strftime('%M:%S', time.gmtime(end_time))
+                timestamp = f"[{start_str} - {end_str}]"
                 
-                # 添加带时间戳的文本，每段后添加空行
-                formatted_text.append(f"[{start_str} - {end_str}] {text.strip()}\n\n")
+                # 每5个片段作为一个段落（可配置）
+                if i > 0 and i % 5 == 0:
+                    # 添加前一个段落
+                    if section_content:
+                        formatted_text.append(f"\n## 段落 {current_section}\n")
+                        formatted_text.extend(section_content)
+                        section_content = []
+                        current_section += 1
+                
+                # 添加带时间戳和导航链接的文本
+                section_content.append(f"{timestamp} [↗](#t={int(start_time)})")
+                section_content.append(f"{text.strip()}\n")
             
-            return ''.join(formatted_text)
+            # 添加最后一个段落
+            if section_content:
+                formatted_text.append(f"\n## 段落 {current_section}\n")
+                formatted_text.extend(section_content)
+            
+            return '\n'.join(formatted_text)
             
         except Exception as e:
             self.logger.error(f"格式化文本片段时出错: {str(e)}")
