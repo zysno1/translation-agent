@@ -1,10 +1,19 @@
+# 核心依赖
+langchain>=0.0.267
+openai>=0.27.0
+yt-dlp>=2023.3.4
 pydub>=0.25.1
-python-dotenv>=1.0.0
-yt-dlp>=2023.12.30
-requests>=2.31.0
-dashscope>=1.13.6
-oss2>=2.18.3
+requests>=2.28.0
+PyYAML>=6.0
+
+# 音频处理
 ffmpeg-python>=0.2.0
-typing-extensions>=4.8.0
-uuid>=1.30
-python-json-logger>=2.0.7
+
+# 文档处理
+python-docx>=0.8.11
+pypdf>=3.12.0
+markdown>=3.4.3
+
+# 工具
+tqdm>=4.65.0
+python-dotenv>=1.0.0

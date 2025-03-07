@@ -1,0 +1,9 @@
+# 语音识别相关代码的所有者
+/src/tools/transcription.py @your-username
+/tests/integration/test_transcription_integration.py @your-username
+/tests/resources/test_audio_*.wav @your-username
+/TRANSCRIPTION.md @your-username
+
+# 配置文件的所有者
+/.gitattributes @your-username
+/.github/CODEOWNERS @your-username 

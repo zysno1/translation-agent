@@ -1,0 +1,7 @@
+# 锁定语音识别相关代码文件
+src/tools/transcription.py lockdown
+tests/integration/test_transcription_integration.py lockdown
+tests/resources/test_audio_*.wav lockdown
+
+# 定义 lockdown 属性
+*.lockdown -diff -merge -text 

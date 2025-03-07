@@ -1,0 +1,196 @@
+---
+description: 
+globs: 
+---
+# YouTube视频处理系统 - 项目规则配置
+
+# 基本编码风格
+format:
+  indent_style: space
+  indent_size: 4
+  max_line_length: 100
+  end_of_line: lf
+  charset: utf-8
+  trim_trailing_whitespace: true
+  insert_final_newline: true
+
+# Python 代码规则
+python:
+  # 导入顺序规范
+  imports:
+    order:
+      - standard_library
+      - third_party
+      - first_party
+      - local
+    group_by_package: true
+    alphabetical: true
+  
+  # 类型注解要求  
+  type_annotations:
+    enabled: true
+    require_return_types: true
+    require_parameter_types: true
+  
+  # 文档字符串规范
+  docstrings:
+    style: google
+    language: chinese
+    require_docstrings:
+      methods: true
+      functions: true
+      classes: true
+    require_param_docs: true
+    require_return_docs: true
+    require_raises_docs: true
+  
+  # 命名规范
+  naming:
+    classes: PascalCase
+    functions: snake_case
+    variables: snake_case
+    constants: UPPER_CASE
+    modules: snake_case
+
+# 项目特定规则
+project_rules:
+  # 1. 程序结构设计规则
+  design:
+    reference_file: "program_structure-langchain-v3.md"
+    adhere_to_design: true
+    version_tracking: true
+  
+  # 2. 代码修改原则
+  code_modification:
+    minimize_changes: true
+    require_alternatives_analysis: true
+    backward_compatibility: true
+    change_documentation: true
+  
+  # 3. 日志系统规则
+  logging:
+    use_central_logger: true
+    forbidden:
+      - print()
+      - console.log
+    format:
+      pattern: "[%(asctime)s] [%(session_id)s] %(levelname)s - %(message)s"
+      date_format: "%Y-%m-%d %H:%M:%S%z"
+    required_context:
+      - session_id
+      - method_name
+    default_level: INFO
+    traceback_formatting: true
+  
+  # 4. 单元测试规则
+  unit_testing:
+    focus_on_core_flows: true
+    min_coverage:
+      core_modules: 80
+      utilities: 60
+    naming_pattern: "test_*.py"
+    require_assertions: true
+  
+  # 5. 集成测试规则
+  integration_testing:
+    use_real_apis: true
+    forbidden:
+      - mock
+      - MagicMock
+      - patch
+    exceptions:
+      - third_party_unstable_apis
+    cost_monitoring: true
+    max_test_budget: 10USD
+    cleanup_after_tests: true
+  
+  # 6. 异常处理规则
+  error_handling:
+    use_custom_exceptions: true
+    hierarchy:
+      base: "VideoProcessingError"
+    require_contextual_info: true
+    fault_tolerance:
+      retry_mechanism: true
+      circuit_breaker: true
+  
+  # 7. 配置管理规则
+  configuration:
+    central_config_manager: true
+    no_hardcoded_values: true
+    environment_specific: true
+    secrets_handling:
+      use_environment_vars: true
+      no_plaintext: true
+  
+  # 8. 代码审查规则
+  code_review:
+    required_approvals: 1
+    check_logic: true
+    check_security: true
+    check_performance: true
+    check_design_compliance: true
+  
+  # 9. 模型使用规则
+  model_usage:
+    use_model_config_manager: true
+    parameter_validation: true
+    cost_optimization: true
+    fallback_mechanism: true
+  
+  # 10. 存储管理规则
+  storage:
+    cleanup_policy: true
+    retention_periods:
+      temp_files: "1d"
+      logs: "7d"
+      results: "30d"
+    secure_handling: true
+
+# 质量保障
+quality_assurance:
+  linters:
+    flake8:
+      enabled: true
+      max_complexity: 12
+    mypy:
+      enabled: true
+      strict: true
+  static_analysis:
+    sonarqube:
+      enabled: true
+  security_scanning:
+    enabled: true
+    schedule: "weekly"
+  performance_testing:
+    load_test:
+      concurrent_users: 1000
+    longevity_test:
+      duration: "7d"
+
+# 部署规则
+deployment:
+  environments:
+    - dev
+    - test
+    - prod
+  validation_criteria:
+    functional_tests: true
+    security_audit: true
+    performance_benchmark: true
+  versioning:
+    semantic: true
+    changelog: true
+
+# VSCode 集成设置
+editor:
+  cursor:
+    suggest_imports: true
+    suggest_error_handling: true
+    code_templates:
+      logger:
+        pattern: "self.logger."
+        completion: "self.logger.${1|info,warning,error,debug|}(f\"${2:message}\")"
+      exception:
+        pattern: "raise "
+        completion: "raise ${1:VideoProcessingError}(f\"${2:message}\")"

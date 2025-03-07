@@ -11,6 +11,11 @@ logs/*
 output/*
 !output/.gitkeep
 
+
+# 忽略数据文件
+data/*
+!data/.gitkeep
+
 # Python
 __pycache__/
 *.py[cod]
@@ -48,3 +53,8 @@ ENV/
 # 操作系统
 .DS_Store
 Thumbs.db
+
+# 本地清理工具（不纳入版本控制）
+cleanup.py
+CLEANUP.md
+

@@ -1,0 +1,88 @@
+# YouTube视频处理系统配置
+
+# 默认模型设置
+defaults:
+  transcription: "paraformer-v2"  # 默认转写模型
+  translation: "qwen-max"         # 默认翻译模型
+  summarization: "qwen-plus"      # 默认摘要模型
+  report_template: "default"      # 默认报告模板
+  llm: "qwen-max"                 # 默认LLM模型
+
+# 环境设置
+environment: "personal"  # 可选: personal, work, test
+
+# API密钥 (从环境变量加载)
+api_keys:
+  openai: "${OPENAI_API_KEY}"
+  dashscope: "${DASHSCOPE_API_KEY}"
+  qwen: "${DASHSCOPE_API_KEY}"
+
+# 存储路径
+storage:
+  temp_dir: "./temp"
+  audio_dir: "./temp/audio"
+  video_dir: "./temp/video"
+  downloads_dir: "./temp/downloads"
+  
+  data_dir: "./data"
+  transcripts_dir: "./data/transcripts"
+  translations_dir: "./data/translations"
+  summaries_dir: "./data/summaries"
+  
+  reports_dir: "./reports"
+  
+  logs_dir: "./logs"
+  # OSS配置
+  oss:
+    access_key_id: "${OSS_ACCESS_KEY_ID}"
+    access_key_secret: "${OSS_ACCESS_KEY_SECRET}"
+    bucket_name: "${OSS_BUCKET_NAME}"
+    endpoint: "${OSS_ENDPOINT}"
+    prefix: "audio"
+
+# 翻译设置
+translation:
+  max_segment_length: 8000  # 单个段落最大字符数 (考虑到qwen-max上下文窗口为32K tokens，最大输入30K tokens，预估8000字符约4000 tokens)
+  min_segment_length: 100   # 单个段落最小字符数
+
+# 日志配置
+logging:
+  level: "INFO"
+  log_dir: "logs"
+  max_size: "10MB"
+  retention_days: 7
+  format: "[%(asctime)s] [%(session_id)s] %(levelname)s - %(message)s"
+
+# LangChain配置
+langchain:
+  chains:
+    translation:
+      prompt_template: "将以下文本翻译成{target_lang}，保持原始格式:\n\n{text}"
+    summarization:
+      prompt_template: "用{max_length}字左右总结以下内容:\n\n{text}"
+
+# DashScope配置
+dashscope:
+  speech:
+    paraformer_defaults:
+      format: "wav"
+      sample_rate: 16000
+  llm:
+    qwen_defaults:
+      temperature: 0.7
+      max_tokens: 1500
+
+# 视频下载配置
+download:
+  max_resolution: 1080
+  format: "mp4"
+  timeout: 300  # 超时时间（秒）
+  retry: 3      # 重试次数
+
+# 批处理配置
+batch:
+  max_batch_size: 5     # 批量处理大小
+  max_workers: 3        # 并行工作线程数
+  max_retries: 3        # 最大重试次数
+  retry_delay: 2        # 重试延迟(秒)
+  retry_failed: true    # 失败重试 
