@@ -23,6 +23,7 @@ storage:
   audio_dir: "./temp/audio"
   video_dir: "./temp/video"
   downloads_dir: "./temp/downloads"
+  converted_audio_dir: "./temp/converted_audio"
   
   data_dir: "./data"
   transcripts_dir: "./data/transcripts"

@@ -505,7 +505,7 @@ class Models:
                     logger.error(f"初始化抖报模型失败: {e}")
                     raise ModelAPIError(f"抖报模型初始化失败: {str(e)}")
             
-            else:
+                else:
                 # 默认使用通义千问
                 logger.warning(f"未识别的模型类型: {model_name}，使用默认通义千问模型")
                 try:
@@ -740,7 +740,7 @@ class Models:
                 logging.info(f"Cleaning up temporary file from OSS: {object_key}")
                 oss_client.delete_file(object_key)
                 logging.info("Temporary file deleted from OSS")
-            except Exception as e:
+        except Exception as e:
                 logging.warning(f"Failed to delete temporary file from OSS: {e}")
             
             if transcription_response.status_code == 200:
@@ -805,29 +805,29 @@ class Models:
             
             # 获取LLM实例
             llm = Models.get_llm(model_name=model_name)
-            
-            # 准备翻译提示词
-            template = config.get('langchain', {}).get('chains', {}).get('translation', {}).get(
-                'prompt_template', "将以下文本翻译成{target_lang}，保持原始格式:\n\n{text}")
-            
+                    
+                    # 准备翻译提示词
+                    template = config.get('langchain', {}).get('chains', {}).get('translation', {}).get(
+                        'prompt_template', "将以下文本翻译成{target_lang}，保持原始格式:\n\n{text}")
+                    
             # 创建LangChain的提示模板
-            prompt = PromptTemplate(
-                template=template,
-                input_variables=["text", "target_lang"]
-            )
+                prompt = PromptTemplate(
+                    template=template,
+                    input_variables=["text", "target_lang"]
+                )
             
             # 创建LangChain链
-            chain = LLMChain(llm=llm, prompt=prompt)
+                chain = LLMChain(llm=llm, prompt=prompt)
             
             # 执行翻译
             logger.info(f"开始翻译文本({len(text)} 字符)到 {target_lang}")
             start_time = time.time()
             
-            result = chain.run(text=text, target_lang=target_lang)
+                result = chain.run(text=text, target_lang=target_lang)
             
             logger.info(f"翻译完成，耗时: {time.time() - start_time:.2f}秒，输出: {len(result)} 字符")
             
-            return {"text": result}
+                return {"text": result}
                 
         except Exception as e:
             logger.error(f"文本翻译失败: {e}")
@@ -884,7 +884,7 @@ class Models:
                 
                 # 执行摘要
                 summary = chain.run(docs)
-            else:
+                    else:
                 logger.info(f"文本较短({len(text)} 字符)，使用直接方法生成摘要")
                 
                 # 准备摘要提示词
@@ -972,23 +972,23 @@ class Models:
     def _transcribe_with_dashscope(audio_path: str, model_name: str) -> Dict[str, Any]:
         """使用DashScope API直接调用（备用方法）"""
         # 此方法仅作为备用，应优先使用LangChain集成
-        try:
-            import dashscope
+                try:
+                    import dashscope
             from dashscope.audio.asr import Recognition
             
             # 获取配置
             config = get_config()
-            
-            # 获取API密钥
-            api_key = os.environ.get('DASHSCOPE_API_KEY')
-            if not api_key:
-                api_key = config.get('api_keys', {}).get('qwen')
-            
-            if not api_key:
-                raise ValueError("未配置DashScope API密钥")
-            
-            dashscope.api_key = api_key
-            
+                    
+                    # 获取API密钥
+                    api_key = os.environ.get('DASHSCOPE_API_KEY')
+                    if not api_key:
+                        api_key = config.get('api_keys', {}).get('qwen')
+                    
+                    if not api_key:
+                        raise ValueError("未配置DashScope API密钥")
+                    
+                    dashscope.api_key = api_key
+                    
             # 创建结果存储
             result_dict = {
                 'text': '',
@@ -1004,21 +1004,21 @@ class Models:
                     sentences = result.get_sentence() or []
                     
                     for sentence in sentences:
-                        text = sentence.get('text', '')
-                        begin_time = sentence.get('begin_time', 0) / 1000.0  # 毫秒转秒
-                        end_time = sentence.get('end_time', 0) / 1000.0  # 毫秒转秒
-                        
+                                        text = sentence.get('text', '')
+                                        begin_time = sentence.get('begin_time', 0) / 1000.0  # 毫秒转秒
+                                        end_time = sentence.get('end_time', 0) / 1000.0  # 毫秒转秒
+                                        
                         result_dict['segments'].append({
-                            'start': begin_time,
-                            'end': end_time,
-                            'text': text
-                        })
+                                            'start': begin_time,
+                                            'end': end_time,
+                                            'text': text
+                                        })
                         
                         result_dict['text'] += text
                     
                     logger.info(f"转录回调成功，当前有 {len(result_dict['segments'])} 个片段")
                     return True
-                else:
+                    else:
                     error_msg = f"DashScope API错误: {result.status_code} - {result.message}"
                     logger.error(error_msg)
                     return False
@@ -1053,7 +1053,7 @@ class Models:
         except ImportError as e:
             logger.error(f"导入DashScope SDK失败: {e}")
             raise ModelAPIError(f"DashScope SDK缺失: {str(e)}")
-        except Exception as e:
+                except Exception as e:
             logger.error(f"DashScope调用失败: {e}")
             raise ModelAPIError(f"DashScope错误: {str(e)}")
     
@@ -1084,10 +1084,9 @@ class Models:
             
         # 获取配置
         config = get_config()
-        base_dir = os.getcwd()
         
         # 使用新的目录结构
-        temp_dir = os.path.join(base_dir, "data", "processed", "temp")
+        temp_dir = config.get('storage', {}).get('temp_dir', './temp')
         convert_dir = os.path.join(temp_dir, "converted_audio")
         
         # 确保临时目录存在
@@ -1101,52 +1100,14 @@ class Models:
         if os.path.exists(output_path):
             logger.info(f"使用已存在的转换文件: {output_path}")
             return output_path
-        
-        # 如果新路径不存在，但旧路径存在，尝试使用旧路径
-        old_temp_dir = config.get('storage', {}).get('temp_dir', './temp')
-        old_output_path = os.path.join(old_temp_dir, "converted_audio", output_filename)
-        if not os.path.exists(output_path) and os.path.exists(old_output_path):
-            logger.info(f"使用旧目录的转换文件: {old_output_path}")
             
-            # 复制到新路径
-            try:
-                import shutil
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                shutil.copy2(old_output_path, output_path)
-                logger.info(f"已将旧目录的文件复制到新路径: {output_path}")
-                return output_path
-            except Exception as e:
-                logger.warning(f"复制文件失败，使用旧路径: {e}")
-                return old_output_path
-        
-        # 使用ffmpeg转换音频
+        # 如果文件不存在，进行转换
         try:
-            logger.info(f"转换音频为16kHz单声道WAV: {audio_path} -> {output_path}")
-            
-            import subprocess
-            cmd = [
-                'ffmpeg', '-y', '-i', audio_path,
-                '-ar', '16000',  # 采样率16kHz
-                '-ac', '1',      # 单声道
-                '-c:a', 'pcm_s16le',  # 16位PCM
-                output_path
-            ]
-            
-            process = subprocess.run(
-                cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False
-            )
-            
-            if process.returncode != 0:
-                logger.error(f"音频转换失败: {process.stderr}")
-                return audio_path  # 转换失败时返回原始路径
-                
-            logger.info(f"音频转换成功: {output_path}")
+            # 使用librosa加载音频并重采样
+            logger.info(f"转换音频: {audio_path} -> {output_path}")
+            y, sr = librosa.load(audio_path, sr=16000, mono=True)
+            sf.write(output_path, y, 16000)
             return output_path
-            
         except Exception as e:
-            logger.error(f"音频转换异常: {e}")
-            return audio_path  # 发生异常时返回原始路径 
+            logger.error(f"音频转换失败: {e}")
+            raise RuntimeError(f"音频转换失败: {e}") 

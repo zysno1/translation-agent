@@ -94,22 +94,20 @@ check_config_file() {
 
 # 确保目录结构正确
 check_directories() {
-    # 新的目录结构
+    # 最新目录结构
     dirs=(
         "data/raw"
-        "data/processed/temp"
-        "data/processed/temp/audio"
-        "data/processed/temp/converted_audio"
-        "data/processed/temp/youtube"
-        "data/processed/transcripts"
-        "data/processed/translations"
-        "data/outputs/md"
-        "data/outputs/srt"
-        "data/outputs/txt"
-        "data/outputs/summaries"
-        "data/archive"
-        "logs"
+        "data/processed"
+        "data/transcripts"
+        "data/translations"
+        "data/summaries"
+        "temp"
+        "temp/audio"
+        "temp/converted_audio"
+        "temp/video"
+        "temp/downloads"
         "reports"
+        "logs"
     )
     
     for dir in "${dirs[@]}"; do

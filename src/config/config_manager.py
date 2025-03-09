@@ -98,10 +98,26 @@ def _create_default_config() -> Dict[str, Any]:
         
         # 存储路径
         'storage': {
-            'base_dir': './output',
+            # 临时文件目录
             'temp_dir': './temp',
-            'transcripts_dir': './transcripts',
-            'translations_dir': './translations',
+            'audio_dir': './temp/audio',
+            'video_dir': './temp/video',
+            'downloads_dir': './temp/downloads',
+            'converted_audio_dir': './temp/converted_audio',
+            
+            # 数据目录
+            'data_dir': './data',
+            'transcripts_dir': './data/transcripts',
+            'translations_dir': './data/translations',
+            'summaries_dir': './data/summaries',
+            'processed_dir': './data/processed',
+            
+            # 报告目录
+            'reports_dir': './reports',
+            
+            # 日志目录
+            'logs_dir': './logs',
+            
             # OSS配置
             'oss': {
                 'bucket': '${OSS_BUCKET_NAME}',
