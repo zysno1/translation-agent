@@ -4,7 +4,7 @@
 defaults:
   transcription: "paraformer-v2"  # 默认转写模型
   translation: "qwen-max"         # 默认翻译模型
-  summarization: "qwen-plus"      # 默认摘要模型
+  summarization: "qwen-long"      # 默认摘要模型
   report_template: "default"      # 默认报告模板
   llm: "qwen-max"                 # 默认LLM模型
 
@@ -45,6 +45,28 @@ storage:
 translation:
   max_segment_length: 8000  # 单个段落最大字符数 (考虑到qwen-max上下文窗口为32K tokens，最大输入30K tokens，预估8000字符约4000 tokens)
   min_segment_length: 100   # 单个段落最小字符数
+  parallel:
+    enabled: true          # 是否启用并行翻译
+    min_video_length: 1200 # 启用并行翻译的最小视频长度（秒），默认为20分钟
+    max_workers: 16        # 最大并行工作线程数
+    batch_size: 20         # 每批处理的段落数量
+    progress_report: true  # 是否报告翻译进度
+
+# 摘要设置
+summarization:
+  long_text_strategy: "recursive"  # 长文本摘要策略: recursive, hierarchical, key_paragraphs
+  chunk_size: 5000                 # 分块大小（字符）
+  overlap: 200                     # 块重叠大小（字符）
+  max_recursive_depth: 3           # 递归摘要最大深度
+  models:
+    qwen-long:                     # 通义千问长文本模型配置
+      temperature: 0.3
+      top_p: 0.8
+      max_tokens: 2000
+    kimi-long:                     # Kimi长文本模型配置（预留）
+      temperature: 0.3
+      top_p: 0.8
+      max_tokens: 2000
 
 # 日志配置
 logging:
@@ -60,7 +82,7 @@ langchain:
     translation:
       prompt_template: "将以下文本翻译成{target_lang}，保持原始格式:\n\n{text}"
     summarization:
-      prompt_template: "用{max_length}字左右总结以下内容:\n\n{text}"
+      prompt_template: "请用{max_length}字左右对以下内容进行简明扼要的总结:\n\n{text}"
 
 # DashScope配置
 dashscope:

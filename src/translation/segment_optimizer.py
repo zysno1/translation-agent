@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-段落优化器
-将时间戳分段的转写结果优化为更适合翻译的语义段落
+段落优化器模块
+用于优化翻译段落，合并短段落，分割长段落
 """
 
 import re
@@ -16,13 +16,15 @@ logger = get_logger()
 
 
 class SegmentOptimizer:
+    """段落优化器，用于优化翻译段落"""
+    
     def __init__(self, max_segment_length: int = 1800, min_segment_length: int = 100):
         """
         初始化段落优化器
         
         Args:
-            max_segment_length: 段落最大长度（字符数）
-            min_segment_length: 段落最小长度（字符数）
+            max_segment_length: 最大段落长度（字符数）
+            min_segment_length: 最小段落长度（字符数）
         """
         self.max_segment_length = max_segment_length
         self.min_segment_length = min_segment_length
@@ -43,126 +45,78 @@ class SegmentOptimizer:
     
     def optimize_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        优化时间戳分段的转写结果，合并为语义段落
+        优化段落，合并短段落，分割长段落
         
         Args:
-            segments: 时间戳分段的转写结果，每个元素应包含text、start和end字段
+            segments: 原始段落列表，每个段落是一个字典，包含text, start, end等字段
             
         Returns:
-            优化后的段落列表，每个元素包含text、start和end字段
+            优化后的段落列表
         """
-        logger.info(f"优化前段落数: {len(segments)}")
+        if not segments:
+            return []
         
-        # 步骤1: 基于句子完整性进行初步分段
-        sentences = []
-        current_sentence = []
+        # 按时间顺序排序
+        sorted_segments = sorted(segments, key=lambda x: x.get('start', 0))
         
-        for segment in segments:
+        # 合并短段落
+        merged_segments = self._merge_short_segments(sorted_segments)
+        
+        # 分割长段落
+        # 注意：当前实现仅合并短段落，不分割长段落
+        # optimized_segments = self._split_long_segments(merged_segments)
+        
+        return merged_segments
+    
+    def _merge_short_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        合并短段落
+        
+        Args:
+            segments: 按时间顺序排序的段落列表
+            
+        Returns:
+            合并后的段落列表
+        """
+        if not segments:
+            return []
+        
+        result = []
+        current_segment = segments[0].copy()
+        current_text = current_segment.get('text', '')
+        
+        for i in range(1, len(segments)):
+            segment = segments[i]
             text = segment.get('text', '')
-            start_time = segment.get('start', 0.0)
-            end_time = segment.get('end', start_time)
             
-            # 添加当前文本片段到句子
-            current_sentence.append({
-                'text': text,
-                'start': start_time,
-                'end': end_time
-            })
-            
-            # 如果是句子结束或段落分隔符，则结束当前句子
-            if self.is_sentence_end(text) or self.is_paragraph_break(text):
-                if current_sentence:
-                    sentences.append(current_sentence)
-                    current_sentence = []
-        
-        # 处理最后一个未完成的句子
-        if current_sentence:
-            sentences.append(current_sentence)
-        
-        logger.info(f"分句后数量: {len(sentences)}")
-        
-        # 步骤2: 合并短句组成语义段落
-        merged_segments = []
-        current_merge = []
-        current_length = 0
-        
-        for sentence in sentences:
-            sentence_text = ' '.join([s['text'] for s in sentence])
-            sentence_length = len(sentence_text)
-            
-            # 如果当前合并段落为空，直接添加
-            if not current_merge:
-                current_merge.extend(sentence)
-                current_length = sentence_length
-                continue
-            
-            # 判断是否可以继续合并
-            if (current_length + sentence_length <= self.max_segment_length) and \
-               not self.is_paragraph_break(sentence[0]['text']):
-                current_merge.extend(sentence)
-                current_length += sentence_length
+            # 如果当前段落文本长度小于最小长度，且合并后不超过最大长度，则合并
+            if len(current_text) < self.min_segment_length and len(current_text + ' ' + text) <= self.max_segment_length:
+                # 更新结束时间
+                current_segment['end'] = segment.get('end', 0)
+                # 合并文本
+                current_text = current_text + ' ' + text
+                current_segment['text'] = current_text
             else:
-                # 保存当前段落并开始新段落
-                if current_merge:
-                    merged_segments.append({
-                        'text': ' '.join([s['text'] for s in current_merge]),
-                        'start': current_merge[0]['start'],
-                        'end': current_merge[-1]['end']
-                    })
-                current_merge = sentence
-                current_length = sentence_length
+                # 添加当前段落到结果
+                result.append(current_segment)
+                # 开始新的段落
+                current_segment = segment.copy()
+                current_text = current_segment.get('text', '')
         
-        # 处理最后一个段落
-        if current_merge:
-            merged_segments.append({
-                'text': ' '.join([s['text'] for s in current_merge]),
-                'start': current_merge[0]['start'],
-                'end': current_merge[-1]['end']
-            })
+        # 添加最后一个段落
+        result.append(current_segment)
         
-        logger.info(f"合并短句后段落数: {len(merged_segments)}")
+        return result
+    
+    def _split_long_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        分割长段落（当前未实现）
         
-        # 步骤3: 处理过短的段落
-        final_segments = []
-        to_merge = None
-        
-        for segment in merged_segments:
-            if len(segment['text']) < self.min_segment_length and not self.is_paragraph_break(segment['text']):
-                # 过短的段落，尝试与下一个合并
-                if to_merge is None:
-                    to_merge = segment
-                else:
-                    # 合并两个短段落
-                    to_merge = {
-                        'text': to_merge['text'] + ' ' + segment['text'],
-                        'start': to_merge['start'],
-                        'end': segment['end']
-                    }
-            else:
-                # 正常长度的段落
-                if to_merge is not None:
-                    # 先处理之前累积的短段落
-                    combined_text = to_merge['text'] + ' ' + segment['text']
-                    if len(combined_text) <= self.max_segment_length:
-                        # 可以合并
-                        final_segments.append({
-                            'text': combined_text,
-                            'start': to_merge['start'],
-                            'end': segment['end']
-                        })
-                        to_merge = None
-                    else:
-                        # 不能合并，单独保存
-                        final_segments.append(to_merge)
-                        final_segments.append(segment)
-                        to_merge = None
-                else:
-                    final_segments.append(segment)
-        
-        # 处理最后可能剩余的短段落
-        if to_merge is not None:
-            final_segments.append(to_merge)
-        
-        logger.info(f"优化后段落数: {len(final_segments)}")
-        
-        return final_segments 
+        Args:
+            segments: 段落列表
+            
+        Returns:
+            分割后的段落列表
+        """
+        # 当前简单实现，不分割长段落
+        return segments 

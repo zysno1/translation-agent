@@ -506,14 +506,14 @@ class Models:
                     raise ModelAPIError(f"抖报模型初始化失败: {str(e)}")
             
             else:
-                # 默认使用通义千问
-                logger.warning(f"未识别的模型类型: {model_name}，使用默认通义千问模型")
-                try:
-                    # 获取默认通义千问模型名称
-                    default_qwen = config.get('defaults', {}).get('qwen_fallback', 'qwen-max')
-                    logger.info(f"使用默认通义千问模型: {default_qwen}")
-                    
-                    from langchain_community.llms import Tongyi
+        # 默认使用通义千问
+            logger.warning(f"未识别的模型类型: {model_name}，使用默认通义千问模型")
+            try:
+                # 获取默认通义千问模型名称
+                default_qwen = config.get('defaults', {}).get('qwen_fallback', 'qwen-max')
+                logger.info(f"使用默认通义千问模型: {default_qwen}")
+                
+                from langchain_community.llms import Tongyi
                     
                     api_key = os.environ.get('DASHSCOPE_API_KEY')
                     if not api_key:
@@ -1050,8 +1050,8 @@ class Models:
                 error_msg = f"DashScope API错误: {response.status_code} - {response.message}"
                 logger.error(error_msg)
                 raise ModelAPIError(error_msg)
-                except ImportError as e:
-                    logger.error(f"导入DashScope SDK失败: {e}")
+        except ImportError as e:
+            logger.error(f"导入DashScope SDK失败: {e}")
             raise ModelAPIError(f"DashScope SDK缺失: {str(e)}")
                 except Exception as e:
             logger.error(f"DashScope调用失败: {e}")
@@ -1069,7 +1069,7 @@ class Models:
             {"start": 10.1, "end": 15.0, "text": "这是最后一句话，谢谢使用。"}
         ]
         
-                    return {
+        return {
             "text": full_text,
             "segments": segments,
             "metadata": {"mock": True, "file": str(audio_path)}
@@ -1084,10 +1084,9 @@ class Models:
             
         # 获取配置
         config = get_config()
-        base_dir = os.getcwd()
         
         # 使用新的目录结构
-        temp_dir = os.path.join(base_dir, "data", "processed", "temp")
+        temp_dir = config.get('storage', {}).get('temp_dir', './temp')
         convert_dir = os.path.join(temp_dir, "converted_audio")
         
         # 确保临时目录存在
@@ -1101,52 +1100,14 @@ class Models:
         if os.path.exists(output_path):
             logger.info(f"使用已存在的转换文件: {output_path}")
             return output_path
-        
-        # 如果新路径不存在，但旧路径存在，尝试使用旧路径
-        old_temp_dir = config.get('storage', {}).get('temp_dir', './temp')
-        old_output_path = os.path.join(old_temp_dir, "converted_audio", output_filename)
-        if not os.path.exists(output_path) and os.path.exists(old_output_path):
-            logger.info(f"使用旧目录的转换文件: {old_output_path}")
             
-            # 复制到新路径
-            try:
-                import shutil
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                shutil.copy2(old_output_path, output_path)
-                logger.info(f"已将旧目录的文件复制到新路径: {output_path}")
-                return output_path
-                except Exception as e:
-                logger.warning(f"复制文件失败，使用旧路径: {e}")
-                return old_output_path
-        
-        # 使用ffmpeg转换音频
+        # 如果文件不存在，进行转换
         try:
-            logger.info(f"转换音频为16kHz单声道WAV: {audio_path} -> {output_path}")
-            
-            import subprocess
-            cmd = [
-                'ffmpeg', '-y', '-i', audio_path,
-                '-ar', '16000',  # 采样率16kHz
-                '-ac', '1',      # 单声道
-                '-c:a', 'pcm_s16le',  # 16位PCM
-                output_path
-            ]
-            
-            process = subprocess.run(
-                cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False
-            )
-            
-            if process.returncode != 0:
-                logger.error(f"音频转换失败: {process.stderr}")
-                return audio_path  # 转换失败时返回原始路径
-                
-            logger.info(f"音频转换成功: {output_path}")
+            # 使用librosa加载音频并重采样
+            logger.info(f"转换音频: {audio_path} -> {output_path}")
+            y, sr = librosa.load(audio_path, sr=16000, mono=True)
+            sf.write(output_path, y, 16000)
             return output_path
-            
         except Exception as e:
-            logger.error(f"音频转换异常: {e}")
-            return audio_path  # 发生异常时返回原始路径 
+            logger.error(f"音频转换失败: {e}")
+            raise RuntimeError(f"音频转换失败: {e}") 

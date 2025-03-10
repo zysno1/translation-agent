@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 """
@@ -21,15 +22,17 @@ from pathlib import Path
 from datetime import datetime
 import logging
 import urllib.request
+import librosa
+import soundfile as sf
 
 # LangChain导入
-from langchain.llms import OpenAI
-from langchain.chat_models import ChatOpenAI
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-from langchain.chains.summarize import load_summarize_chain
-from langchain.docstore.document import Document
-from langchain.callbacks import get_openai_callback
+from langchain_community.llms import OpenAI
+from langchain_community.chat_models import ChatOpenAI
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnableSequence
+from langchain_core.documents import Document
+from langchain_community.callbacks.manager import get_openai_callback
+from langchain_community.chat_models.tongyi import ChatTongyi
 
 from src.config.config_manager import get_config
 from src.utils.log import get_logger
@@ -505,7 +508,7 @@ class Models:
                     logger.error(f"初始化抖报模型失败: {e}")
                     raise ModelAPIError(f"抖报模型初始化失败: {str(e)}")
             
-                else:
+            else:
                 # 默认使用通义千问
                 logger.warning(f"未识别的模型类型: {model_name}，使用默认通义千问模型")
                 try:
@@ -740,7 +743,7 @@ class Models:
                 logging.info(f"Cleaning up temporary file from OSS: {object_key}")
                 oss_client.delete_file(object_key)
                 logging.info("Temporary file deleted from OSS")
-        except Exception as e:
+            except Exception as e:
                 logging.warning(f"Failed to delete temporary file from OSS: {e}")
             
             if transcription_response.status_code == 200:
@@ -805,29 +808,29 @@ class Models:
             
             # 获取LLM实例
             llm = Models.get_llm(model_name=model_name)
-                    
-                    # 准备翻译提示词
-                    template = config.get('langchain', {}).get('chains', {}).get('translation', {}).get(
-                        'prompt_template', "将以下文本翻译成{target_lang}，保持原始格式:\n\n{text}")
-                    
-            # 创建LangChain的提示模板
-                prompt = PromptTemplate(
-                    template=template,
-                    input_variables=["text", "target_lang"]
-                )
             
-            # 创建LangChain链
-                chain = LLMChain(llm=llm, prompt=prompt)
+            # 准备翻译提示词
+            template = config.get('langchain', {}).get('chains', {}).get('translation', {}).get(
+                'prompt_template', "将以下文本翻译成{target_lang}，保持原始格式:\n\n{text}")
+            
+            # 创建提示模板
+            prompt = PromptTemplate(
+                template=template,
+                input_variables=["text", "target_lang"]
+            )
+            
+            # 创建处理链
+            chain = prompt | llm
             
             # 执行翻译
             logger.info(f"开始翻译文本({len(text)} 字符)到 {target_lang}")
             start_time = time.time()
+            result = chain.invoke({"text": text, "target_lang": target_lang})
+            end_time = time.time()
             
-                result = chain.run(text=text, target_lang=target_lang)
+            logger.info(f"翻译完成，耗时: {end_time - start_time:.2f}秒，输出: {len(result)} 字符")
             
-            logger.info(f"翻译完成，耗时: {time.time() - start_time:.2f}秒，输出: {len(result)} 字符")
-            
-                return {"text": result}
+            return {"text": result}
                 
         except Exception as e:
             logger.error(f"文本翻译失败: {e}")
@@ -836,78 +839,86 @@ class Models:
     @staticmethod
     @audit_model_call("summarize")
     @retry(max_attempts=2, delay=1, backoff=2, exceptions=(Exception,))
-    def summarize(text: str, max_length: Optional[int] = None, model_name: Optional[str] = None) -> str:
-        """
-        使用LangChain生成摘要
+    def summarize(text: str, max_length: int = 300, model_name: Optional[str] = None) -> Dict[str, Any]:
+        """生成文本摘要，使用长上下文文本模型"""
+        # 如果没有指定模型，使用配置中的摘要模型
+        config = get_config()
+        model_name = model_name or config.get('defaults', {}).get('summarization')
         
-        Args:
-            text: 待总结文本
-            max_length: 摘要最大长度（字符数）
-            model_name: 模型名称，如果为None则从配置获取
-            
-        Returns:
-            生成的摘要文本
-        """
+        # 使用指定的模型处理所有摘要任务
+        logger.info(f"使用{model_name}处理摘要，文本长度: {len(text)} 字符")
+        return Models._generate_summary_with_long_context_model(text, max_length, model_name)
+    
+    @staticmethod
+    def _generate_summary_with_long_context_model(text: str, max_length: int = 300, model_name: str = None) -> Dict[str, Any]:
+        """使用长上下文文本模型生成摘要"""
+        start_time = time.time()
+        
         try:
-            # 从配置加载模型名称（如果未提供）
+            # 获取API密钥和配置
             config = get_config()
-            if model_name is None:
-                model_name = config.get('defaults', {}).get('summarization')
-                logger.info(f"使用默认摘要模型: {model_name}")
+            api_key = os.getenv('DASHSCOPE_API_KEY') or config.get('api_keys', {}).get('dashscope')
             
-            # 设置默认最大长度
-            if max_length is None:
-                max_length = 200
-                
-            # 获取LLM实例
-            llm = Models.get_llm(model_name=model_name)
+            # 获取模型特定的配置参数
+            model_config = config.get('summarization', {}).get('models', {}).get(model_name, {})
+            temperature = model_config.get('temperature', 0.3)
+            top_p = model_config.get('top_p', 0.8)
+            max_tokens = model_config.get('max_tokens', 2000)
             
-            # 两种方法：长文本使用map_reduce，短文本使用简单LLMChain
-            if len(text) > 10000:  # 如果文本超过10000字符
-                logger.info(f"文本较长({len(text)} 字符)，使用map_reduce方法生成摘要")
-                
-                # 将文本拆分为多个文档
-                from langchain.text_splitter import RecursiveCharacterTextSplitter
-                text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=2000,
-                    chunk_overlap=200
-                )
-                texts = text_splitter.split_text(text)
-                docs = [Document(page_content=t) for t in texts]
-                
-                # 使用map_reduce摘要链
-                chain = load_summarize_chain(
-                    llm, 
-                    chain_type="map_reduce",
-                    verbose=True
-                )
-                
-                # 执行摘要
-                summary = chain.run(docs)
-                    else:
-                logger.info(f"文本较短({len(text)} 字符)，使用直接方法生成摘要")
-                
-                # 准备摘要提示词
-                template = config.get('langchain', {}).get('chains', {}).get('summarization', {}).get(
-                    'prompt_template', "用{max_length}字左右总结以下内容:\n\n{text}")
-                
-                # 创建LangChain的提示模板
-                prompt = PromptTemplate(
-                    template=template,
-                    input_variables=["text", "max_length"]
-                )
-                
-                # 创建LangChain链
-                chain = LLMChain(llm=llm, prompt=prompt)
-                
-                # 执行摘要
-                summary = chain.run(text=text, max_length=max_length)
+            logger.info(f"使用模型 {model_name} 生成摘要，参数: temperature={temperature}, top_p={top_p}")
             
-            logger.info(f"摘要生成完成，长度: {len(summary)} 字符")
-            return summary
-                
+            # 根据模型名称选择合适的处理方法
+            if model_name.startswith("qwen"):
+                # 通义千问系列模型
+                chat = ChatTongyi(
+                    model=model_name,
+                    dashscope_api_key=api_key,
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_tokens=max_tokens
+                )
+            elif model_name.startswith("kimi"):
+                # Kimi模型系列 - 未来实现
+                # 为未来实现预留接口
+                raise NotImplementedError(f"模型 {model_name} 尚未实现")
+            else:
+                # 默认使用通义千问处理
+                logger.warning(f"未知模型类型 {model_name}，使用默认处理方法")
+                chat = ChatTongyi(
+                    model=model_name,
+                    dashscope_api_key=api_key,
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_tokens=max_tokens
+                )
+            
+            # 准备提示词
+            prompt_template = config.get('langchain', {}).get('chains', {}).get('summarization', {}).get(
+                'prompt_template', "请用{max_length}字左右对以下内容进行简明扼要的总结:\n\n{text}")
+            
+            prompt = prompt_template.format(text=text, max_length=max_length)
+            
+            # 调用模型
+            response = chat.invoke(prompt)
+            summary_text = response.content
+            
+            execution_time = time.time() - start_time
+            
+            logger.info(f"摘要生成完成，长度: {len(summary_text)} 字符，耗时: {execution_time:.2f}秒")
+            
+            return {
+                "text": summary_text,
+                "model": model_name,
+                "execution_time": execution_time,
+                "parameters": {
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "max_tokens": max_tokens
+                }
+            }
+            
         except Exception as e:
-            logger.error(f"生成摘要失败: {e}")
+            logger.error(f"使用{model_name}生成摘要时出错: {str(e)}")
             raise ModelAPIError(f"摘要生成错误: {str(e)}")
     
     @staticmethod
@@ -950,12 +961,16 @@ class Models:
                 input_variables=["text"]
             )
             
-            # 创建LangChain链
-            chain = LLMChain(llm=llm, prompt=prompt)
+            # 创建处理链
+            chain = prompt | llm
             
             # 执行分析
             logger.info(f"开始{analysis_type}分析，文本长度: {len(text)} 字符")
-            result = chain.run(text=text)
+            start_time = time.time()
+            result = chain.invoke({"text": text})
+            end_time = time.time()
+            
+            logger.info(f"{analysis_type}分析完成，耗时: {end_time - start_time:.2f}秒")
             
             # 尝试解析JSON结果
             try:
@@ -972,23 +987,23 @@ class Models:
     def _transcribe_with_dashscope(audio_path: str, model_name: str) -> Dict[str, Any]:
         """使用DashScope API直接调用（备用方法）"""
         # 此方法仅作为备用，应优先使用LangChain集成
-                try:
-                    import dashscope
+        try:
+            import dashscope
             from dashscope.audio.asr import Recognition
             
             # 获取配置
             config = get_config()
-                    
-                    # 获取API密钥
-                    api_key = os.environ.get('DASHSCOPE_API_KEY')
-                    if not api_key:
-                        api_key = config.get('api_keys', {}).get('qwen')
-                    
-                    if not api_key:
-                        raise ValueError("未配置DashScope API密钥")
-                    
-                    dashscope.api_key = api_key
-                    
+            
+            # 获取API密钥
+            api_key = os.environ.get('DASHSCOPE_API_KEY')
+            if not api_key:
+                api_key = config.get('api_keys', {}).get('qwen')
+            
+            if not api_key:
+                raise ValueError("未配置DashScope API密钥")
+            
+            dashscope.api_key = api_key
+            
             # 创建结果存储
             result_dict = {
                 'text': '',
@@ -1004,21 +1019,21 @@ class Models:
                     sentences = result.get_sentence() or []
                     
                     for sentence in sentences:
-                                        text = sentence.get('text', '')
-                                        begin_time = sentence.get('begin_time', 0) / 1000.0  # 毫秒转秒
-                                        end_time = sentence.get('end_time', 0) / 1000.0  # 毫秒转秒
-                                        
+                        text = sentence.get('text', '')
+                        begin_time = sentence.get('begin_time', 0) / 1000.0  # 毫秒转秒
+                        end_time = sentence.get('end_time', 0) / 1000.0  # 毫秒转秒
+                        
                         result_dict['segments'].append({
-                                            'start': begin_time,
-                                            'end': end_time,
-                                            'text': text
-                                        })
+                            'start': begin_time,
+                            'end': end_time,
+                            'text': text
+                        })
                         
                         result_dict['text'] += text
                     
                     logger.info(f"转录回调成功，当前有 {len(result_dict['segments'])} 个片段")
                     return True
-                    else:
+                else:
                     error_msg = f"DashScope API错误: {result.status_code} - {result.message}"
                     logger.error(error_msg)
                     return False
@@ -1053,7 +1068,7 @@ class Models:
         except ImportError as e:
             logger.error(f"导入DashScope SDK失败: {e}")
             raise ModelAPIError(f"DashScope SDK缺失: {str(e)}")
-                except Exception as e:
+        except Exception as e:
             logger.error(f"DashScope调用失败: {e}")
             raise ModelAPIError(f"DashScope错误: {str(e)}")
     
@@ -1110,4 +1125,59 @@ class Models:
             return output_path
         except Exception as e:
             logger.error(f"音频转换失败: {e}")
-            raise RuntimeError(f"音频转换失败: {e}") 
+            raise RuntimeError(f"音频转换失败: {e}")
+    
+    @staticmethod
+    @retry(max_attempts=2, delay=1, backoff=2, exceptions=(Exception,))
+    def complete(prompt: str, model_name: Optional[str] = None, max_tokens: int = 1000, temperature: float = 0.3) -> str:
+        """
+        通用文本补全接口，用于生成文本回复
+        
+        Args:
+            prompt: 提示词
+            model_name: 模型名称，未指定时使用配置中的默认模型
+            max_tokens: 最大生成令牌数
+            temperature: 温度参数，控制生成的随机性
+            
+        Returns:
+            生成的文本
+        """
+        # 如果没有指定模型，使用配置中的摘要模型
+        config = get_config()
+        model_name = model_name or config.get('defaults', {}).get('summarization')
+        
+        try:
+            logger.info(f"使用{model_name}进行文本补全，提示词长度: {len(prompt)}")
+            
+            # 获取API密钥和配置
+            api_key = os.getenv('DASHSCOPE_API_KEY') or config.get('api_keys', {}).get('dashscope')
+            
+            # 根据模型名称选择合适的处理方法
+            if model_name.startswith("qwen"):
+                # 通义千问系列模型
+                chat = ChatTongyi(
+                    model=model_name,
+                    dashscope_api_key=api_key,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+            else:
+                # 默认使用通义千问处理
+                logger.warning(f"未知模型类型 {model_name}，使用默认处理方法")
+                chat = ChatTongyi(
+                    model=model_name,
+                    dashscope_api_key=api_key,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+            
+            # 调用模型
+            response = chat.invoke(prompt)
+            result_text = response.content
+            
+            logger.info(f"文本补全完成，生成文本长度: {len(result_text)}")
+            return result_text
+            
+        except Exception as e:
+            logger.error(f"文本补全失败: {e}")
+            raise 

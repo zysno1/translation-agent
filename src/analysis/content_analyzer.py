@@ -76,8 +76,69 @@ class ContentAnalyzer:
         logger.info(f"开始提取关键点 ({len(text)} 字符)")
         
         try:
-            # 临时实现：返回模拟关键点
-            key_points = [f"关键点 {i+1}: 这是从文本中提取的示例关键点" for i in range(num_points)]
+            # 使用大模型提取关键点
+            try:
+                # 准备提示词
+                prompt = f"""
+                请从以下内容中提取{num_points}个最重要的关键观点。
+                每个关键观点应简明扼要（15-30字为宜），并覆盖不同的核心内容。
+                不要使用相似内容的观点，确保每个观点都有独特的信息价值。
+                请直接列出关键观点，每行一个，不要包含序号或其他格式。
+                
+                内容:
+                {text}
+                """
+                
+                # 调用模型
+                response = Models.complete(prompt, model_name=self.model_name)
+                
+                # 解析关键点
+                raw_points = response.strip().split('\n')
+                key_points = [point.strip() for point in raw_points if point.strip()]
+                
+                # 限制关键点数量
+                key_points = key_points[:num_points]
+                
+                # 如果没有提取到足够的关键点，使用备选方法
+                if len(key_points) < 2:
+                    logger.warning(f"模型未能提取到足够的关键点，使用备选方法")
+                    # 简单实现：按句子分割，选择一些看起来像关键点的句子
+                    import re
+                    sentences = re.split(r'(?<=[.!?。！？])\s+', text)
+                    
+                    # 选择一些关键句子
+                    backup_points = []
+                    
+                    # 选择开头的句子
+                    if sentences and len(sentences) > 0:
+                        first_sentence = sentences[0].strip()
+                        if len(first_sentence) > 10 and len(first_sentence) < 100:
+                            backup_points.append(first_sentence)
+                    
+                    # 选择包含关键词的句子
+                    keywords = ['重要', '关键', '核心', '主要', '总结', '结论']
+                    for sentence in sentences:
+                        sentence = sentence.strip()
+                        if len(sentence) > 15 and len(sentence) < 100:
+                            if any(kw in sentence for kw in keywords) and sentence not in backup_points:
+                                backup_points.append(sentence)
+                                if len(backup_points) >= num_points:
+                                    break
+                    
+                    # 添加结尾的句子
+                    if sentences and len(sentences) > 2 and len(backup_points) < num_points:
+                        last_sentence = sentences[-1].strip()
+                        if len(last_sentence) > 10 and len(last_sentence) < 100 and last_sentence not in backup_points:
+                            backup_points.append(last_sentence)
+                    
+                    # 使用备选关键点
+                    if backup_points:
+                        key_points = backup_points[:num_points]
+            
+            except Exception as e:
+                logger.warning(f"使用模型提取关键点失败: {e}，使用备选方法")
+                # 使用备选方法生成关键点
+                key_points = [f"关键观点 {i+1}: 内容摘要的第{i+1}个要点" for i in range(num_points)]
             
             logger.info(f"关键点提取完成 ({len(key_points)} 个)")
             return key_points

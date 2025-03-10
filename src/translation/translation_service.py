@@ -6,9 +6,11 @@
 """
 
 import os
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Tuple
 from concurrent.futures import ThreadPoolExecutor
 import time
+from functools import partial
+import concurrent.futures
 
 from src.config.config_manager import get_config
 from src.utils.log import get_logger
@@ -80,6 +82,14 @@ class TranslationService:
         self.max_retries = config.get('batch', {}).get('max_retries', 3)    # 最大重试次数
         self.retry_delay = config.get('batch', {}).get('retry_delay', 2)    # 重试延迟(秒)
         self.max_workers = config.get('batch', {}).get('max_workers', 3)    # 最大并发数
+        
+        # 并行翻译配置
+        parallel_config = config.get('translation', {}).get('parallel', {})
+        self.parallel_enabled = parallel_config.get('enabled', True)        # 是否启用并行翻译
+        self.parallel_min_video_length = parallel_config.get('min_video_length', 3600)  # 启用并行翻译的最小视频长度（秒）
+        self.parallel_max_workers = parallel_config.get('max_workers', 16)  # 最大并行工作线程数
+        self.parallel_batch_size = parallel_config.get('batch_size', 20)    # 每批处理的段落数量
+        self.parallel_progress_report = parallel_config.get('progress_report', True)  # 是否报告翻译进度
     
     def translate(self, text: str, target_lang: str = "中文") -> TranslationResult:
         """
@@ -190,18 +200,25 @@ class TranslationService:
         logger.info(f"批量翻译完成，成功翻译 {len(results)} 条文本")
         return results
     
-    def translate_segments(self, segments: List[Dict[str, Any]], target_lang: str = "中文") -> List[Dict[str, Any]]:
+    def translate_segments(self, segments: List[Dict[str, Any]], target_lang: str = "中文", 
+                         video_duration: Optional[float] = None) -> List[Dict[str, Any]]:
         """
         翻译带有时间戳的片段（通常用于字幕翻译）
         
         Args:
             segments: 包含文本和时间戳的片段列表
             target_lang: 目标语言
+            video_duration: 视频时长（秒），用于决定是否使用并行翻译
             
         Returns:
             翻译后的片段列表
         """
         logger.info(f"开始翻译 {len(segments)} 个片段到 {target_lang}")
+        
+        # 判断是否使用并行翻译
+        if self.parallel_enabled and video_duration and video_duration >= self.parallel_min_video_length:
+            logger.info(f"检测到长视频 ({video_duration:.1f} 秒)，启用并行翻译")
+            return self.translate_segments_parallel(segments, target_lang)
         
         # 使用段落优化器合并片段
         optimized_segments = self.segment_optimizer.optimize_segments(segments)
@@ -227,19 +244,47 @@ class TranslationService:
             optimized_translations.append(translated_segment)
         
         # 还原到原始时间戳段落
-        final_translations = self._map_optimized_to_original(optimized_translations, segments)
+        final_translations = self._map_optimized_to_original(optimized_translations, segments, target_lang)
         
         logger.info(f"片段翻译完成")
         return final_translations
     
+    def translate_segments_parallel(self, segments: List[Dict[str, Any]], 
+                                  target_lang: str = "中文") -> List[Dict[str, Any]]:
+        """
+        并行翻译带有时间戳的片段（用于长视频处理）
+        
+        Args:
+            segments: 包含文本和时间戳的片段列表
+            target_lang: 目标语言
+            
+        Returns:
+            翻译后的片段列表
+        """
+        logger.info(f"开始并行翻译 {len(segments)} 个片段到 {target_lang}")
+        
+        # 使用段落优化器合并片段（此步骤仍保留以减少总段落数）
+        optimized_segments = self.segment_optimizer.optimize_segments(segments)
+        logger.info(f"段落优化完成: 从 {len(segments)} 个时间戳段落合并为 {len(optimized_segments)} 个语义段落")
+        
+        # 将优化后的段落映射回原始段落（使用并行处理）
+        final_translations = self._map_optimized_to_original_parallel(
+            optimized_segments, segments, target_lang, self.parallel_max_workers
+        )
+        
+        logger.info(f"并行片段翻译完成")
+        return final_translations
+    
     def _map_optimized_to_original(self, optimized_translations: List[Dict[str, Any]], 
-                                  original_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                                  original_segments: List[Dict[str, Any]], 
+                                  target_lang: str = "中文") -> List[Dict[str, Any]]:
         """
         将优化后的翻译映射回原始时间戳段落
         
         Args:
             optimized_translations: 优化后的翻译结果
             original_segments: 原始时间戳段落
+            target_lang: 目标语言
             
         Returns:
             映射回原始时间戳的翻译结果
@@ -261,10 +306,11 @@ class TranslationService:
         for segment in original_segments:
             start = segment.get('start', 0)
             end = segment.get('end', 0)
+            original_text = segment.get('text', '')
             
             # 复制原始段落
             translated_segment = segment.copy()
-            translated_segment['original_text'] = segment.get('text', '')
+            translated_segment['original_text'] = original_text
             
             # 查找最匹配的翻译
             best_match = None
@@ -282,22 +328,204 @@ class TranslationService:
             
             # 如果找到匹配，使用其翻译
             if best_match and best_overlap > 0:
-                # 尝试根据原文与合并原文的比例分配翻译文本
-                original_ratio = len(segment.get('text', '')) / max(1, len(best_match.get('original_text', '')))
-                # 简单估算对应翻译文本长度
-                est_trans_length = int(len(best_match.get('text', '')) * original_ratio)
-                
-                # 使用完整翻译（简单实现，未做精确分割）
-                translated_segment['text'] = best_match.get('text', '')
+                # 单独翻译每个segment，确保每个segment有独立的翻译
+                translation = self.translate(original_text, target_lang)
+                translated_segment['text'] = translation.text
             else:
                 # 未找到匹配，单独翻译
                 logger.warning(f"未找到与时间段 [{start}-{end}] 匹配的优化段落，单独翻译")
-                translation = self.translate(segment.get('text', ''), target_lang)
+                translation = self.translate(original_text, target_lang)
                 translated_segment['text'] = translation.text
             
             final_translations.append(translated_segment)
         
         return final_translations
+    
+    def _map_optimized_to_original_parallel(self, optimized_translations: List[Dict[str, Any]], 
+                                          original_segments: List[Dict[str, Any]], 
+                                          target_lang: str = "中文",
+                                          max_workers: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        并行将优化后的翻译映射回原始时间戳段落
+        
+        Args:
+            optimized_translations: 优化后的翻译结果
+            original_segments: 原始时间戳段落
+            target_lang: 目标语言
+            max_workers: 最大工作线程数
+            
+        Returns:
+            映射回原始时间戳的翻译结果
+        """
+        # 创建时间范围到翻译的映射
+        time_range_to_translation = {}
+        for segment in optimized_translations:
+            start = segment.get('start', 0)
+            end = segment.get('end', 0)
+            text = segment.get('text', '')
+            original_text = segment.get('original_text', '')
+            time_range_to_translation[(start, end)] = {
+                'text': text,
+                'original_text': original_text
+            }
+        
+        # 将原始段落分成多个批次进行处理
+        # 如果未指定max_workers，则使用配置中的值或默认值
+        if max_workers is None:
+            max_workers = self.parallel_max_workers
+        
+        # 批次大小，根据配置或默认值确定
+        batch_size = self.parallel_batch_size
+        batches = [original_segments[i:i+batch_size] for i in range(0, len(original_segments), batch_size)]
+        
+        logger.info(f"分割为 {len(batches)} 批进行并行处理，每批约 {batch_size} 个段落，使用 {max_workers} 个工作线程")
+        
+        # 部分函数应用，创建用于并行处理的函数
+        process_batch_func = partial(
+            self._process_segment_batch, 
+            time_range_to_translation=time_range_to_translation, 
+            target_lang=target_lang
+        )
+        
+        # 添加进度报告
+        total_batches = len(batches)
+        completed_batches = 0
+        start_time = time.time()
+        
+        # 使用线程池进行并行处理
+        final_translations = []
+        batch_results = {}  # 存储批次结果的字典，键为批次索引
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有批次任务
+            future_to_batch = {executor.submit(process_batch_func, batch): i for i, batch in enumerate(batches)}
+            
+            # 收集结果
+            for future in concurrent.futures.as_completed(future_to_batch):
+                batch_index = future_to_batch[future]
+                completed_batches += 1
+                
+                # 进度报告
+                if self.parallel_progress_report:
+                    progress = (completed_batches / total_batches) * 100
+                    elapsed_time = time.time() - start_time
+                    remaining_batches = total_batches - completed_batches
+                    eta = (elapsed_time / completed_batches) * remaining_batches if completed_batches > 0 else 0
+                    
+                    # 每完成10%或第一个批次或最后一个批次时报告进度
+                    if (completed_batches % max(1, total_batches // 10) == 0 or 
+                        completed_batches == 1 or completed_batches == total_batches):
+                        logger.info(f"翻译进度: {progress:.1f}% ({completed_batches}/{total_batches} 批次), "
+                                   f"已用时间: {elapsed_time:.1f}秒, 预计剩余时间: {eta:.1f}秒")
+                
+                try:
+                    results = future.result()
+                    # 存储结果，保持原始顺序
+                    batch_results[batch_index] = results
+                except Exception as e:
+                    logger.error(f"批次 {batch_index} 处理失败: {e}")
+                    # 对失败的批次进行回退处理
+                    batch_results[batch_index] = self._process_segment_batch_fallback(
+                        batches[batch_index], target_lang
+                    )
+        
+        # 按批次索引顺序合并结果
+        for i in range(len(batches)):
+            if i in batch_results:
+                final_translations.extend(batch_results[i])
+        
+        # 确保最终结果的顺序与原始段落顺序一致
+        if final_translations:
+            final_translations.sort(key=lambda x: (x.get('start', 0), x.get('index', 0)))
+        
+        return final_translations
+    
+    def _process_segment_batch(self, batch: List[Dict[str, Any]], 
+                             time_range_to_translation: Dict[Tuple[float, float], Dict[str, Any]],
+                             target_lang: str) -> List[Dict[str, Any]]:
+        """
+        处理一个段落批次
+        
+        Args:
+            batch: 段落批次
+            time_range_to_translation: 时间范围到翻译的映射
+            target_lang: 目标语言
+            
+        Returns:
+            处理后的段落批次
+        """
+        # 收集批次中所有需要翻译的文本
+        texts_to_translate = []
+        indices_to_translate = []  # 记录需要翻译的段落在批次中的索引
+        result_segments = []
+        
+        # 为每个段落添加批次内索引
+        for i, segment in enumerate(batch):
+            # 复制原始段落，添加索引用于后续排序
+            translated_segment = segment.copy()
+            translated_segment['index'] = i  # 添加批次内索引
+            translated_segment['original_text'] = segment.get('text', '')
+            result_segments.append(translated_segment)
+            
+            # 收集所有文本进行批量翻译
+            texts_to_translate.append(segment.get('text', ''))
+            indices_to_translate.append(i)
+        
+        # 批量翻译所有文本
+        if texts_to_translate:
+            try:
+                # 使用批量翻译，提高效率
+                translation_results = self.batch_translate(texts_to_translate, target_lang)
+                
+                # 将翻译结果应用到对应段落
+                for i, index in enumerate(indices_to_translate):
+                    if i < len(translation_results):
+                        result_segments[index]['text'] = translation_results[i].text
+            except Exception as e:
+                logger.error(f"批次翻译失败，回退到单独翻译: {e}")
+                # 如果批量翻译失败，回退到单独翻译
+                for index in indices_to_translate:
+                    try:
+                        original_text = result_segments[index].get('original_text', '')
+                        translation = self.translate(original_text, target_lang)
+                        result_segments[index]['text'] = translation.text
+                    except Exception as e2:
+                        logger.error(f"单独翻译段落失败: {e2}")
+                        # 如果翻译失败，使用错误提示
+                        result_segments[index]['text'] = f"[翻译错误: {str(e2)}]"
+        
+        return result_segments
+    
+    def _process_segment_batch_fallback(self, batch: List[Dict[str, Any]], target_lang: str) -> List[Dict[str, Any]]:
+        """
+        批次处理失败时的回退方法，逐个翻译段落
+        
+        Args:
+            batch: 段落批次
+            target_lang: 目标语言
+            
+        Returns:
+            处理后的段落批次
+        """
+        result_segments = []
+        
+        for i, segment in enumerate(batch):
+            # 复制原始段落
+            translated_segment = segment.copy()
+            translated_segment['index'] = i  # 添加批次内索引
+            translated_segment['original_text'] = segment.get('text', '')
+            
+            try:
+                # 单独翻译
+                translation = self.translate(segment.get('text', ''), target_lang)
+                translated_segment['text'] = translation.text
+            except Exception as e:
+                logger.error(f"回退翻译失败: {e}")
+                translated_segment['text'] = f"[翻译错误: {str(e)}]"
+            
+            result_segments.append(translated_segment)
+        
+        return result_segments
     
     def _translate_with_model(self, text: str, target_lang: str) -> Dict[str, str]:
         """

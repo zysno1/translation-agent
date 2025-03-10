@@ -106,33 +106,77 @@ def process_single_video(args, logger):
         
         # 4. 翻译
         translator = TranslationService()
-        translation = translator.translate(transcript.text)
         
-        # 将视频信息添加到翻译结果中
-        if hasattr(translation, 'to_dict'):
-            translation_dict = translation.to_dict()
+        # 检查transcript_dict中是否包含segments
+        if isinstance(transcript_dict, dict) and 'segments' in transcript_dict and transcript_dict['segments']:
+            # 获取视频时长，决定是否使用并行翻译
+            video_duration = 0
+            if video_info and 'duration' in video_info:
+                video_duration = video_info.get('duration', 0)
+            elif hasattr(transcript, 'duration'):
+                video_duration = transcript.duration
+            
+            # 使用translate_segments处理带时间戳的段落，传入视频时长参数
+            logger.info(f"使用分段翻译处理 {len(transcript_dict['segments'])} 个段落，视频时长: {video_duration} 秒")
+            translated_segments = translator.translate_segments(
+                transcript_dict['segments'],
+                video_duration=video_duration
+            )
+            
+            # 创建翻译结果字典，保持与原始transcript_dict结构一致
+            # 合并所有翻译后的文本作为完整翻译
+            full_translated_text = " ".join([seg.get('text', '') for seg in translated_segments])
+            
+            translation_dict = {
+                'text': full_translated_text,  # 合并后的完整翻译文本
+                'segments': translated_segments,  # 翻译后的分段
+                'source_lang': 'auto',
+                'target_lang': '中文',
+                'source_text': transcript.text
+            }
+            
+            # 添加视频信息
             if video_info:
                 translation_dict['video_info'] = video_info
-            translation_path = storage.save_translation(translation_dict)
         else:
-            # 已经是字典或其他类型
-            translation_dict = translation
-            if isinstance(translation_dict, dict) and video_info:
-                translation_dict['video_info'] = video_info
-            translation_path = storage.save_translation(translation_dict)
+            # 回退到整体翻译
+            logger.warning("转录结果中没有分段信息，使用整体翻译")
+            translation = translator.translate(transcript.text)
+            
+            # 将视频信息添加到翻译结果中
+            if hasattr(translation, 'to_dict'):
+                translation_dict = translation.to_dict()
+                if video_info:
+                    translation_dict['video_info'] = video_info
+            else:
+                # 已经是字典或其他类型
+                translation_dict = translation
+                if isinstance(translation_dict, dict) and video_info:
+                    translation_dict['video_info'] = video_info
         
+        translation_path = storage.save_translation(translation_dict)
         logger.info(f"翻译完成，保存至: {translation_path}")
         
         # 5. 生成摘要 (现在作为默认流程的一部分)
         analyzer = ContentAnalyzer()
         # 使用译文文本生成摘要
         summary_text = None
-        if hasattr(translation, 'text'):
-            summary_text = translation.text
-        elif isinstance(translation, dict) and 'text' in translation:
-            summary_text = translation['text']
+        
+        # 获取翻译后的文本
+        if isinstance(translation_dict, dict):
+            if 'text' in translation_dict:
+                # 首先尝试使用完整文本
+                summary_text = translation_dict['text']
+            elif 'segments' in translation_dict and translation_dict['segments']:
+                # 如果没有完整文本但有分段，则拼接所有分段的文本
+                segment_texts = [seg.get('text', '') for seg in translation_dict['segments'] if seg.get('text')]
+                summary_text = ' '.join(segment_texts)
         else:
-            summary_text = str(translation)
+            # 回退处理
+            if hasattr(translation_dict, 'text'):
+                summary_text = translation_dict.text
+            else:
+                summary_text = str(translation_dict)
             
         summary_dict = analyzer.generate_summary(summary_text)
         
@@ -141,8 +185,26 @@ def process_single_video(args, logger):
             # 如果返回的是字符串，转换为字典
             summary_dict = {
                 'text': summary_dict,
+                'summary': summary_dict,  # 同时添加summary字段以确保兼容性
                 'type': 'summary'
             }
+        elif isinstance(summary_dict, dict):
+            # 确保同时有text和summary字段，保持两者同步
+            if 'text' in summary_dict and 'summary' not in summary_dict:
+                summary_dict['summary'] = summary_dict['text']
+            elif 'summary' in summary_dict and 'text' not in summary_dict:
+                summary_dict['text'] = summary_dict['summary']
+        
+        # 提取关键点并添加到summary_dict中
+        if isinstance(summary_dict, dict):
+            try:
+                key_points = analyzer.extract_key_points(summary_text)
+                summary_dict['key_points'] = key_points
+                logger.info(f"成功提取{len(key_points)}个关键点")
+            except Exception as e:
+                logger.warning(f"提取关键点失败: {e}")
+                # 失败时添加默认关键点，避免报告生成错误
+                summary_dict['key_points'] = ["未能成功提取关键点，请查看完整摘要内容。"]
             
         # 将视频信息添加到摘要结果中
         if isinstance(summary_dict, dict) and video_info:

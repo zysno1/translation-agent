@@ -81,9 +81,9 @@ class ReportGenerator:
         
         # 保存报告文件
         try:
-        with open(report_path, 'w', encoding='utf-8') as f:
-            f.write(report_content)
-                logger.info(f"报告已生成并保存: {report_path}")
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write(report_content)
+            logger.info(f"报告已生成并保存: {report_path}")
         except Exception as e:
             logger.error(f"保存报告失败: {e}")
             raise
@@ -125,8 +125,8 @@ class ReportGenerator:
         # 生成关键观点部分
         key_points = self._format_key_points(translation, summary)
         
-        # 生成完整对照翻译部分 - 不包含按句分段对照翻译和内容时长分布图
-        translation_section = self._format_translation_content_simplified(transcript, translation)
+        # 生成完整对照翻译部分 - 使用连贯式Markdown格式
+        translation_section = self._format_translation_content_coherent(transcript, translation)
         
         # 生成相关资源部分
         related_resources = self._format_related_resources(video_info)
@@ -253,8 +253,8 @@ class ReportGenerator:
         Returns:
             内容概览部分的格式化文本
         """
-        # 获取摘要文本
-        summary_text = summary.get('summary', '')
+        # 获取摘要文本（从'text'或'summary'字段获取，优先使用'text'）
+        summary_text = summary.get('text', summary.get('summary', ''))
         if not summary_text and translation.get('text'):
             # 如果没有摘要但有翻译文本，尝试提取开头部分作为简单摘要
             text = translation.get('text', '')
@@ -272,6 +272,91 @@ class ReportGenerator:
 ### 视频主题摘要
 {enhanced_summary}
 """
+    
+    def _format_translation_content_coherent(self, transcript: Dict[str, Any], translation: Dict[str, Any]) -> str:
+        """
+        格式化完整对照翻译部分 - 连贯式Markdown格式
+        无论短视频还是长视频，都保持较小的分段，同时保证内容连贯性
+        
+        Args:
+            transcript: 转录结果
+            translation: 翻译结果
+            
+        Returns:
+            完整对照翻译部分的格式化文本
+        """
+        # 初始化翻译内容区域
+        translation_section = "## 完整对照翻译\n\n"
+        
+        # 获取分段数据
+        transcript_segments = transcript.get('segments', [])
+        translation_segments = translation.get('segments', [])
+        
+        # 确保两个列表长度一致，如果不一致，则取较短的一个
+        min_length = min(len(transcript_segments), len(translation_segments))
+        
+        if min_length > 0:
+            # 两者都有分段信息，进行对照翻译
+            for i in range(min_length):
+                t_seg = transcript_segments[i]
+                tr_seg = translation_segments[i]
+                
+                # 获取原文和译文
+                orig_text = t_seg.get('text', '').strip()
+                trans_text = tr_seg.get('text', '').strip()
+                
+                # 格式化时间戳
+                start_time_str = self._format_timestamp(t_seg.get('start', 0))
+                end_time_str = self._format_timestamp(t_seg.get('end', 0))
+                
+                # 添加分段内容，使用连贯式Markdown格式
+                translation_section += f"**{start_time_str} - {end_time_str}**  \n"
+                translation_section += f"原文：{orig_text}  \n"
+                translation_section += f"译文：{trans_text}  \n\n"  # 仅在段落间添加一个空行
+        
+        elif transcript_segments and not translation_segments and translation.get('text'):
+            # 如果翻译结果中没有分段信息，但有完整文本，则智能分配翻译
+            full_translation_text = translation.get('text', '')
+            
+            # 计算视频总时长
+            total_duration = 0
+            for seg in transcript_segments:
+                total_duration += seg.get('end', 0) - seg.get('start', 0)
+            
+            # 为每个时间段分配翻译文本
+            last_pos = 0
+            for seg in transcript_segments:
+                # 计算该段占视频总时长的比例
+                seg_duration = seg.get('end', 0) - seg.get('start', 0)
+                if total_duration > 0:
+                    ratio = seg_duration / total_duration
+                else:
+                    ratio = 1.0 / len(transcript_segments)
+                
+                # 根据比例计算翻译文本的长度
+                trans_length = int(len(full_translation_text) * ratio)
+                seg_trans_text = full_translation_text[last_pos:last_pos + trans_length]
+                last_pos += trans_length
+                
+                # 格式化时间戳
+                start_time_str = self._format_timestamp(seg.get('start', 0))
+                end_time_str = self._format_timestamp(seg.get('end', 0))
+                
+                # 添加分段内容
+                translation_section += f"**{start_time_str} - {end_time_str}**  \n"
+                translation_section += f"原文：{seg.get('text', '').strip()}  \n"
+                translation_section += f"译文：{seg_trans_text.strip()}  \n\n"
+        
+        else:
+            # 如果没有任何分段信息，添加一个提示
+            translation_section += "无法生成分段对照翻译，因为缺少必要的时间戳信息。\n\n"
+            if translation.get('text'):
+                translation_section += "完整翻译文本：\n\n"
+                translation_section += translation.get('text', '')
+            else:
+                translation_section += "未能获取翻译文本。"
+        
+        return translation_section
     
     def _format_translation_content_simplified(self, transcript: Dict[str, Any], translation: Dict[str, Any]) -> str:
         """
@@ -781,12 +866,20 @@ class ReportGenerator:
         """格式化关键观点部分"""
         # 初始化关键观点部分
         key_points = "## 关键观点\n\n"
+        key_points += "<div style=\"border: 1px solid #ddd; padding: 10px; border-radius: 5px; background-color: #f9f9f9; margin: 10px 0;\">\n\n"
         
         # 尝试从summary中提取关键点
         if summary and summary.get('key_points'):
             points = summary.get('key_points', [])
-            for i, point in enumerate(points):
-                key_points += f"{i+1}. {point}\n"
+            # 限制显示的关键点数量，通常5-7个比较合适
+            max_points = min(7, len(points))
+            
+            if max_points > 0:
+                for i, point in enumerate(points[:max_points]):
+                    # 添加加粗的序号和美化的格式
+                    key_points += f"**{i+1}.** {point}\n\n"
+            else:
+                key_points += "> 未能提取关键观点，请参考摘要内容\n\n"
         else:
             # 如果没有预定义的关键点，从翻译文本中提取
             text = translation.get('text', '')
@@ -831,4 +924,5 @@ class ReportGenerator:
             else:
                 key_points += "> 未能提取关键观点，因为译文内容为空\n"
         
+        key_points += "</div>\n\n"
         return key_points 
