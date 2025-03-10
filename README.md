@@ -27,7 +27,7 @@
 
 1. 克隆仓库
    ```bash
-   git clone https://github.com/yourusername/translation-agent.git
+   git clone https://github.com/zysno1/translation-agent.git
    cd translation-agent
    ```
 
@@ -59,7 +59,7 @@
 ### 命令行选项
 
 ```bash
-python main.py --url "https://www.youtube.com/watch?v=example" --format md --summarize
+python main.py --url "https://www.youtube.com/watch?v=example" --verbose
 ```
 
 #### 输入选项(必选其一)
@@ -70,22 +70,23 @@ python main.py --url "https://www.youtube.com/watch?v=example" --format md --sum
 
 #### 输出选项
 
-- `--format` - 输出格式，可选: md, srt, txt (默认: md)
-- `--summarize` - 生成内容摘要
+- `--template` - 报告模板，可选: default, academic, business (默认: default)
 - `--cleanup` - 处理完成后清理中间文件
 - `--config` - 指定配置文件路径 (默认: config.yaml)
 - `--verbose` - 显示详细日志
 
+> 注意：内容摘要现在是默认生成的，`--summarize` 参数仍然存在但已废弃。
+
 ### 示例
 
-1. 处理单个YouTube视频并生成摘要:
+1. 处理单个YouTube视频:
    ```bash
-   python main.py --url "https://www.youtube.com/watch?v=example" --summarize
+   python main.py --url "https://www.youtube.com/watch?v=example"
    ```
 
-2. 处理本地视频文件并输出SRT格式:
+2. 处理本地视频文件并使用学术报告模板:
    ```bash
-   python main.py --file "path/to/video.mp4" --format srt
+   python main.py --file "path/to/video.mp4" --template academic
    ```
 
 3. 批量处理视频队列:
@@ -93,24 +94,56 @@ python main.py --url "https://www.youtube.com/watch?v=example" --format md --sum
    python main.py --batch "video_queue.txt" --cleanup
    ```
 
+4. 启用详细日志输出:
+   ```bash
+   python main.py --url "https://www.youtube.com/watch?v=example" --verbose
+   ```
+
 ## 配置文件
 
-默认配置文件为`config.yaml`，包含以下设置:
+默认配置文件为`config.yaml`，包含以下主要设置:
 
 ```yaml
+# 默认模型设置
 defaults:
   transcription: "paraformer-v2"  # 默认转写模型
   translation: "qwen-max"         # 默认翻译模型
-  summarization: "qwen-plus"      # 默认摘要模型
-  output_format: "md"             # 默认输出格式
+  summarization: "qwen-long"      # 默认摘要模型
+  report_template: "default"      # 默认报告模板
+  llm: "qwen-max"                 # 默认LLM模型
 
+# 环境设置
+environment: "personal"  # 可选: personal, work, test
+
+# API密钥 (从环境变量加载)
+api_keys:
+  openai: "${OPENAI_API_KEY}"
+  dashscope: "${DASHSCOPE_API_KEY}"
+  qwen: "${DASHSCOPE_API_KEY}"
+
+# 存储路径
 storage:
+  temp_dir: "./temp"
+  data_dir: "./data"
+  reports_dir: "./reports"
+  logs_dir: "./logs"
+  # OSS配置
   oss:
-    bucket: ""                    # OSS桶名，可通过环境变量覆盖
-    endpoint: ""                  # OSS终端节点，可通过环境变量覆盖
-    access_key_id: ""             # OSS访问密钥ID，可通过环境变量覆盖
-    access_key_secret: ""         # OSS访问密钥密码，可通过环境变量覆盖
+    access_key_id: "${OSS_ACCESS_KEY_ID}"
+    access_key_secret: "${OSS_ACCESS_KEY_SECRET}"
+    bucket_name: "${OSS_BUCKET_NAME}"
+    endpoint: "${OSS_ENDPOINT}"
+    prefix: "audio"
+
+# 翻译设置
+translation:
+  parallel:
+    enabled: true          # 是否启用并行翻译
+    min_video_length: 1200 # 启用并行翻译的最小视频长度（秒），默认为20分钟
+    max_workers: 16        # 最大并行工作线程数
 ```
+
+完整配置文件包含更多高级设置，如摘要策略、日志配置、LangChain模板等。每个部分都有详细注释，便于理解和自定义。
 
 ## 时间追踪功能
 
@@ -155,7 +188,11 @@ storage:
 ├── data/                   # 数据目录  
 │   ├── transcripts/        # 转写结果
 │   ├── translations/       # 翻译结果
-│   └── summaries/          # 摘要结果
+│   ├── summaries/          # 摘要结果
+│   ├── processed/          # 处理数据
+│   ├── outputs/            # 输出数据
+│   ├── raw/                # 原始数据
+│   └── archive/            # 归档数据
 ├── reports/                # 输出报告
 ├── temp/                   # 临时文件
 └── logs/                   # 日志文件
