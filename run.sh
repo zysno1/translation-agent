@@ -4,6 +4,9 @@
 # 一键运行脚本
 # 用于轻松启动YouTube视频处理系统
 
+# 系统版本
+SYSTEM_VERSION="v2.0.0"
+
 # 颜色配置
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,6 +18,7 @@ NC='\033[0m' # 无颜色
 echo -e "${BLUE}================================${NC}"
 echo -e "${GREEN}  YouTube视频处理系统启动脚本  ${NC}"
 echo -e "${BLUE}================================${NC}"
+echo -e "${GREEN}         版本: ${SYSTEM_VERSION}${NC}"
 echo ""
 
 # 验证Python环境
@@ -135,6 +139,47 @@ show_examples() {
     echo "   ./run.sh --url https://www.youtube.com/watch?v=dQw4w9WgXcQ --template academic --summarize"
 }
 
+# 显示性能统计
+show_stats() {
+    echo -e "${BLUE}查找最新的处理报告...${NC}"
+    
+    # 查找最新的报告文件
+    latest_report=$(find ./reports -type f -name "*.md" -print0 | xargs -0 ls -t | head -n 1)
+    
+    if [[ -z "$latest_report" ]]; then
+        echo -e "${YELLOW}未找到任何报告文件${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}找到最新报告: ${latest_report}${NC}"
+    echo ""
+    echo -e "${BLUE}处理统计信息:${NC}"
+    
+    # 提取并显示处理统计信息
+    stats=$(grep -A 10 "## 处理统计" "$latest_report")
+    
+    if [[ -z "$stats" ]]; then
+        echo -e "${YELLOW}未在报告中找到处理统计信息${NC}"
+        return 1
+    fi
+    
+    # 提取关键信息
+    audio_extraction=$(echo "$stats" | grep "音频提取时间" | sed 's/.*音频提取时间: //')
+    transcription=$(echo "$stats" | grep "转写时间" | sed 's/.*转写时间: //')
+    translation=$(echo "$stats" | grep "翻译时间" | sed 's/.*翻译时间: //')
+    
+    # 显示信息
+    echo -e "${GREEN}音频提取耗时: ${audio_extraction}${NC}"
+    echo -e "${GREEN}转写耗时: ${transcription}${NC}"
+    echo -e "${GREEN}翻译耗时: ${translation}${NC}"
+    
+    echo ""
+    echo -e "${BLUE}要查看完整报告，请运行:${NC}"
+    echo "open \"$latest_report\""
+    
+    return 0
+}
+
 # 显示帮助信息
 show_help() {
     echo -e "${BLUE}用法:${NC}"
@@ -152,16 +197,61 @@ show_help() {
     echo "  --summarize     生成内容摘要"
     echo "  --cleanup       清理所有中间文件"
     echo "  --config PATH   指定配置文件路径"
+    echo "  --version       显示当前系统版本"
+    echo "  --stats         显示最近处理的性能统计"
+    echo ""
+    echo -e "${BLUE}特性:${NC}"
+    echo "  * 精确时间追踪 - 系统会记录每个处理阶段的耗时"
+    echo "  * 自动生成报告 - 处理完成后生成详细的Markdown报告"
+    echo "  * 统一OSS转录 - 使用阿里云OSS进行音频转录"
+    echo "  * 并行翻译支持 - 长视频启用并行翻译加速处理"
 }
 
 # 运行主程序
 run_main() {
     echo -e "${BLUE}启动YouTube视频处理系统...${NC}"
+    # 记录开始时间
+    start_time=$(date +%s)
+    
+    # 运行主程序
     python3 main.py "$@"
     exit_code=$?
     
+    # 记录结束时间
+    end_time=$(date +%s)
+    total_time=$((end_time - start_time))
+    
+    # 格式化时间显示
+    format_time() {
+        local sec=$1
+        local min=0
+        local hr=0
+        
+        if [ $sec -ge 60 ]; then
+            min=$((sec / 60))
+            sec=$((sec % 60))
+        fi
+        
+        if [ $min -ge 60 ]; then
+            hr=$((min / 60))
+            min=$((min % 60))
+        fi
+        
+        if [ $hr -gt 0 ]; then
+            echo "${hr}小时${min}分${sec}秒"
+        elif [ $min -gt 0 ]; then
+            echo "${min}分${sec}秒"
+        else
+            echo "${sec}秒"
+        fi
+    }
+    
     if [[ $exit_code -eq 0 ]]; then
         echo -e "${GREEN}处理完成，退出码: $exit_code${NC}"
+        echo -e "${GREEN}总处理时间: $(format_time $total_time)${NC}"
+        echo ""
+        echo -e "${BLUE}注意:${NC} 详细的处理时间统计可在生成的报告中查看"
+        echo -e "      包括音频提取、转写和翻译各阶段的耗时"
     else
         echo -e "${RED}处理失败，退出码: $exit_code${NC}"
     fi
@@ -181,6 +271,18 @@ main() {
     if [[ "$1" == "--examples" ]]; then
         show_examples
         exit 0
+    fi
+    
+    # 检查是否请求显示版本
+    if [[ "$1" == "--version" ]]; then
+        echo -e "${GREEN}YouTube视频处理系统 ${SYSTEM_VERSION}${NC}"
+        exit 0
+    fi
+    
+    # 检查是否请求显示统计
+    if [[ "$1" == "--stats" ]]; then
+        show_stats
+        exit $?
     fi
     
     # 初始化环境
