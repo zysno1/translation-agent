@@ -11,6 +11,7 @@ import sys
 import argparse
 from pathlib import Path
 import datetime
+import time  # 添加time模块
 
 # 添加src到Python路径
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
@@ -64,6 +65,9 @@ def process_single_video(args, logger):
         # 2. 预处理
         preprocessor = VideoPreprocessor()
         
+        # 记录音频提取开始时间
+        audio_extraction_start = time.time()
+        
         if args.url:
             logger.info(f"处理YouTube URL: {args.url}")
             # 从URL中下载视频、提取音频并获取视频信息
@@ -84,10 +88,21 @@ def process_single_video(args, logger):
             }
         else:
             raise ValueError("必须提供URL或文件路径")
+        
+        # 计算音频提取耗时
+        audio_extraction_time = time.time() - audio_extraction_start
+        logger.info(f"音频提取耗时: {audio_extraction_time:.2f}秒")
             
         # 3. 音频转写
+        # 记录转写开始时间
+        transcription_start = time.time()
+        
         transcriber = AudioTranscriber()
         transcript = transcriber.transcribe(audio_path)
+        
+        # 计算转写耗时
+        transcription_time = time.time() - transcription_start
+        logger.info(f"转写耗时: {transcription_time:.2f}秒")
         
         # 确保transcript是字典类型
         if hasattr(transcript, 'to_dict'):
@@ -105,6 +120,9 @@ def process_single_video(args, logger):
         logger.info(f"转写完成，保存至: {transcript_path}")
         
         # 4. 翻译
+        # 记录翻译开始时间
+        translation_start = time.time()
+        
         translator = TranslationService()
         
         # 检查transcript_dict中是否包含segments
@@ -153,6 +171,10 @@ def process_single_video(args, logger):
                 translation_dict = translation
                 if isinstance(translation_dict, dict) and video_info:
                     translation_dict['video_info'] = video_info
+        
+        # 计算翻译耗时
+        translation_time = time.time() - translation_start
+        logger.info(f"翻译耗时: {translation_time:.2f}秒")
         
         translation_path = storage.save_translation(translation_dict)
         logger.info(f"翻译完成，保存至: {translation_path}")
@@ -218,9 +240,9 @@ def process_single_video(args, logger):
             "start_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "end_time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "audio_duration": getattr(transcript, 'duration', 0),
-            "audio_extraction_time": 0,  # 这里可以添加实际的音频提取耗时
-            "transcription_time": 0,  # 这里可以添加实际的转写耗时
-            "translation_time": 0,  # 这里可以添加实际的翻译耗时
+            "audio_extraction_time": audio_extraction_time,  # 添加实际的音频提取耗时
+            "transcription_time": transcription_time,  # 添加实际的转写耗时
+            "translation_time": translation_time,  # 添加实际的翻译耗时
             "transcript_length": len(getattr(transcript, 'text', '')),
             "translation_length": len(translation_dict.get('text', '')),
             "summary_length": len(summary_dict.get('text', '')) if isinstance(summary_dict, dict) else len(str(summary_dict)),
