@@ -1,6 +1,6 @@
-# YouTube视频处理系统 v5.3.0
+# YouTube视频处理系统 v2.0.0
 
-> **当前系统版本**: v5.3.0 (最后更新：2025-03-10)
+> **当前系统版本**: v2.0.0 (最后更新：2025-03-10)
 > 
 > **版本状态**: 稳定版，适用于个人和小型团队使用
 
@@ -58,7 +58,7 @@
 
 ### 1.1 系统版本与状态
 
-**当前系统版本**: v5.3.0 (最后更新：2025-03-10)
+**当前系统版本**: v2.0.0 (最后更新：2025-03-10)
 
 **版本状态**: 稳定版，适用于个人和小型团队使用
 
@@ -93,12 +93,21 @@ graph TD
 本系统提供以下核心功能：
 
 - YouTube视频下载与预处理
-- 音频提取与转写
-- 多模型文本翻译
+- 音频提取与OSS云转写
+- 多模型文本翻译与并行处理
 - 内容分析与摘要生成
 - 结构化报告生成
 - 批量视频处理
 - 精确时间追踪与性能分析
+
+#### 1.3.1 系统流程概述
+
+1. **视频获取**：下载YouTube视频或使用本地视频文件
+2. **音频提取**：从视频中提取音频流
+3. **音频转写**：使用阿里云OSS和通义千问的paraformer模型进行音频转写
+4. **文本翻译**：使用LangChain访问通义千问API翻译文本
+5. **内容分析**：生成内容摘要和关键点提取
+6. **报告生成**：基于模板生成包含视频信息、原文、译文和摘要的综合报告
 
 ### 1.4 应用场景
 
@@ -309,18 +318,60 @@ class VideoPreprocessor:
 
 ```python
 class AudioTranscriber:
-    def __init__(self, model_name=None):
-        """初始化转录器"""
-        config = load_config()
+    def __init__(self, model_name: Optional[str] = None, output_dir: Optional[str] = None):
+        """
+        初始化转写器
+        
+        Args:
+            model_name: 转写模型名称，默认从配置获取
+            output_dir: 输出目录，默认从配置获取
+        """
+        config = get_config()
+        self.config = config
+        
+        # 转写模型
         self.model_name = model_name or config.get('defaults', {}).get('transcription')
-        logger.info(f"转录器初始化，使用模型: {self.model_name}")
+        
+        # 输出目录
+        if output_dir is None:
+            output_dir = config.get('storage', {}).get('transcripts_dir', './transcripts')
+        
+        self.output_dir = ensure_dir(output_dir)
+        
+        logger.info(f"转写器初始化，使用模型: {self.model_name}, 输出目录: {self.output_dir}")
     
-    def transcribe(self, audio: AudioSource) -> TranscriptionResult:
-        """生成带时间戳的文本"""
+    def transcribe(self, audio_path, save_result=True):
+        """
+        转录音频文件
+        
+        参数:
+            audio_path: 音频文件路径
+            save_result: 是否保存结果到文件
+            
+        返回:
+            TranscriptionResult对象
+        """
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(f"音频文件不存在: {audio_path}")
+        
+        # 检查音频时长（仅用于日志记录）
+        audio_duration = get_audio_duration(audio_path)
+        logger.info(f"音频时长: {audio_duration} 秒")
+        
+        # 使用统一的OSS文件转录API
+        logger.info(f"使用文件转录API，模型：{self.model_name}")
+        
         try:
-            # 使用LangChain进行转录
-            result = Models.transcribe(audio, self.model_name)
-            logger.info(f"转录完成: {len(result.text)} 字符")
+            # 调用Models.transcribe_file方法
+            result_dict = Models.transcribe_file(audio_path_str, model_name=self.model_name)
+            
+            # 解析结果
+            result = self._parse_transcription_result(result_dict)
+            
+            # 保存结果到文件
+            if save_result:
+                self._save_transcription_result(audio_path, result)
+            
             return result
         except Exception as e:
             logger.error(f"转录失败: {e}")
@@ -328,100 +379,108 @@ class AudioTranscriber:
 ```
 
 关键特性：
-- 支持多种转写模型
+- 统一的OSS文件转录实现，简化代码复杂度
+- 支持多种转写模型选择
 - 提供时间戳信息便于对照视频
-- 整合了音频优化处理
-- 使用LangChain统一模型接入
+- 集成音频优化前处理，提高转写精度
+- 自动保存转写结果和元数据
 
 ### 4.3 多模型翻译
 
-翻译服务支持多种模型和故障转移：
+翻译服务支持多种模型和并行处理：
 
 ```python
 class TranslationService:
-    def __init__(self, model_name=None):
-        """初始化翻译服务"""
-        config = load_config()
-        self.model_name = model_name or config.get('defaults', {}).get('translation')
+    def __init__(self, model_name=None, default_target_lang="中文"):
+        """
+        初始化翻译服务
+        
+        Args:
+            model_name: 翻译模型名称，默认从配置获取
+            default_target_lang: 默认目标语言
+        """
+        config = get_config()
+        self.config = config
+        
+        # 加载翻译模型
+        self.model_name = model_name or config.get('defaults', {}).get('translation', 'qwen-max')
+        logger.info(f"初始化翻译服务，使用模型: {self.model_name}")
+        
+        # 默认目标语言
+        self.default_target_lang = default_target_lang
         
         # 并行翻译配置
         parallel_config = config.get('translation', {}).get('parallel', {})
         self.parallel_enabled = parallel_config.get('enabled', True)        # 是否启用并行翻译
-        self.parallel_min_video_length = parallel_config.get('min_video_length', 1200)  # 启用并行翻译的最小视频长度（秒）
+        self.parallel_min_video_length = parallel_config.get('min_video_length', 3600)  # 启用并行翻译的最小视频长度（秒）
         self.parallel_max_workers = parallel_config.get('max_workers', 16)  # 最大并行工作线程数
-        
-        logger.info(f"翻译服务初始化，使用模型: {self.model_name}")
+        self.parallel_batch_size = parallel_config.get('batch_size', 20)    # 每批处理的段落数量
+        self.parallel_progress_report = parallel_config.get('progress_report', True)  # 是否报告翻译进度
     
-    def translate(self, text: str) -> TranslationResult:
-        """支持故障转移的翻译"""
+    def translate(self, text: str, target_lang: str = "中文") -> TranslationResult:
+        """
+        翻译文本
+        
+        Args:
+            text: 待翻译文本
+            target_lang: 目标语言
+            
+        Returns:
+            翻译结果
+        """
+        # 记录开始翻译
+        logger.info(f"开始翻译文本 ({len(text)} 字符) 到 {target_lang}")
+        
+        # 如果文本为空，直接返回空结果
+        if not text or text.strip() == "":
+            logger.warning("翻译文本为空")
+            return TranslationResult(
+                text="",
+                target_lang=target_lang,
+                source_text=text
+            )
+        
         try:
-            # 使用LangChain进行翻译
-            result = Models.translate(text, target_lang="中文", model_name=self.model_name)
-            logger.info(f"翻译完成: {len(result.text)} 字符")
+            # 使用模型进行翻译
+            result = self._translate_with_model(text, target_lang)
             return result
         except Exception as e:
-            logger.error(f"主要翻译模型失败，尝试备用模型: {e}")
-            # 故障转移到备用模型
-            return self._fallback_translate(text)
+            logger.error(f"翻译失败: {e}")
+            # 尝试故障转移到备用模型
+            return self._fallback_translate(text, target_lang)
             
     def translate_segments(self, segments: List[Dict[str, Any]], 
-                         target_lang: str = "中文", 
-                         video_duration: Optional[float] = None) -> List[Dict[str, Any]]:
-        """翻译带有时间戳的片段"""
-        # 判断是否使用并行翻译
-        if self.parallel_enabled and video_duration and video_duration >= self.parallel_min_video_length:
-            logger.info(f"检测到长视频 ({video_duration:.1f} 秒)，启用并行翻译")
-            return self.translate_segments_parallel(segments, target_lang)
+                          target_lang: str = "中文", 
+                          video_duration: Optional[float] = None) -> List[Dict[str, Any]]:
+        """
+        翻译带有时间戳的段落列表
         
-        # 标准翻译流程...
+        Args:
+            segments: 带时间戳的片段列表
+            target_lang: 目标语言
+            video_duration: 视频时长（秒），用于决定是否使用并行翻译
         
-    def translate_segments_parallel(self, segments: List[Dict[str, Any]], 
-                                  target_lang: str = "中文") -> List[Dict[str, Any]]:
-        """并行翻译带有时间戳的片段（用于长视频处理）"""
-        # 并行处理翻译，提高长视频处理效率
-```
-
-主要功能：
-- 支持多种翻译模型
-- 故障转移机制确保服务可用性
-- 支持翻译质量自评估
-- 分段处理长文本避免上下文限制
-- 并行翻译处理机制，显著提升长视频翻译效率
-
-#### 4.3.1 并行翻译处理
-
-并行翻译处理专为长视频内容（20分钟以上）设计，能够利用多线程并行处理大量翻译任务：
-
-```python
-def _map_optimized_to_original_parallel(self, optimized_translations, original_segments, target_lang, max_workers):
-    """并行将优化后的翻译映射回原始时间戳段落"""
-    # 将原始段落分成多个批次
-    batch_size = self.parallel_batch_size
-    batches = [original_segments[i:i+batch_size] for i in range(0, len(original_segments), batch_size)]
-    
-    # 使用线程池并行处理多个批次
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有批次任务
-        future_to_batch = {executor.submit(process_batch_func, batch): i for i, batch in enumerate(batches)}
-        
-        # 收集结果并监控进度
-        for future in concurrent.futures.as_completed(future_to_batch):
-            # 处理完成的批次结果...
+        Returns:
+            翻译后的段落列表
+        """
+        # 判断是否启用并行翻译
+        use_parallel = (self.parallel_enabled and 
+                       video_duration and 
+                       video_duration >= self.parallel_min_video_length)
+                       
+        if use_parallel:
+            return self._parallel_translate_segments(segments, target_lang)
+        else:
+            return self._sequential_translate_segments(segments, target_lang)
 ```
 
 关键特性：
-- 智能批处理：按段落批量处理，减少API调用次数
-- 动态工作线程：根据系统资源和任务量自动调整并行度
-- 进度监控：提供实时翻译进度和剩余时间估计
-- 错误恢复：单个批次失败不影响整体任务，提供回退方案
-- 性能提升：对于20分钟以上视频，处理速度提升5-10倍
-
-配置参数：
-- `parallel.enabled`: 是否启用并行翻译（默认：true）
-- `parallel.min_video_length`: 启用并行翻译的最小视频长度（秒）（默认：1200，即20分钟）
-- `parallel.max_workers`: 最大并行工作线程数（默认：16）
-- `parallel.batch_size`: 每批处理的段落数量（默认：20）
-- `parallel.progress_report`: 是否报告翻译进度（默认：true）
+- 支持多种翻译模型选择，采用统一调用接口
+- 长视频智能并行处理，大幅提高翻译效率
+- 实时进度报告，提供翻译完成预估时间
+- 自动语言检测，避免重复翻译
+- 故障转移机制，确保翻译任务可靠完成
+- 内置段落优化器，提高翻译质量
 
 ### 4.4 内容分析
 
@@ -919,7 +978,7 @@ def process_single_video(args, logger):
 
 ### 8.1 当前版本说明
 
-当前系统版本为 **v5.3.0**，主要特点包括：
+当前系统版本为 **v2.0.0**，主要特点包括：
 
 1. 完整的视频处理流水线，从YouTube视频URL到中文翻译报告
 2. 统一的AI模型访问框架，所有AI功能通过LangChain集成实现
@@ -927,6 +986,7 @@ def process_single_video(args, logger):
 4. 精确的时间追踪功能，监控各处理阶段的性能表现
 5. 简化的存储结构，更直观的文件管理
 6. 完善的日志和错误处理系统
+7. 统一的OSS转录策略，提高转写效率和稳定性
 
 此版本专注于个人使用场景，优先实现了最常用的功能，避免过度设计。API设计遵循简单直观的原则，便于快速开发和调试。
 
@@ -934,37 +994,36 @@ def process_single_video(args, logger):
 
 | 模块         | 版本      | 变更说明                            |
 |--------------|-----------|------------------------------------|
-| 核心架构     | v5.1.0    | 添加报告生成系统，优化个人工具使用体验 |
-| 预处理模块   | v5.0.0    | 简化下载和处理流程                  |
-| 转写服务     | v5.0.0    | 通过LangChain统一转录接口           |
-| 多模型翻译   | v5.0.0    | 通过LangChain统一翻译模型接口       |
-| 存储管理     | v5.0.0    | 简化存储结构，专注于文件操作         |
-| 配置体系     | v5.0.0    | 简化配置结构，增加个人用户预设       |
-| 测试框架     | v5.0.0    | 简化测试策略，使用直观的测试脚本     |
-| 日志系统     | v5.0.0    | 统一日志接口，简化配置              |
-| 批量处理     | v5.0.0    | 简化的批量处理流程                  |
-| LangChain接口| v5.0.0    | 新增统一的LangChain模型接口         |
-| 报告生成     | v5.1.0    | 新增基于内容的报告生成系统          |
-| 模型访问框架 | v5.3.0    | 统一AI模型访问框架，全部通过LangChain实现 |
-| 时间追踪     | v5.3.0    | 新增精确时间追踪系统，监控各处理阶段耗时 |
+| 核心架构     | v2.0.0    | 添加报告生成系统，优化个人工具使用体验 |
+| 预处理模块   | v2.0.0    | 简化下载和处理流程                  |
+| 转写服务     | v2.0.0    | 统一OSS文件转录接口，提高稳定性       |
+| 多模型翻译   | v2.0.0    | 通过LangChain统一翻译模型接口       |
+| 存储管理     | v2.0.0    | 简化存储结构，专注于文件操作         |
+| 配置体系     | v2.0.0    | 简化配置结构，增加个人用户预设       |
+| 日志系统     | v2.0.0    | 统一日志接口，简化配置              |
+| 批量处理     | v2.0.0    | 简化的批量处理流程                  |
+| LangChain接口| v2.0.0    | 统一的LangChain模型接口             |
+| 报告生成     | v2.0.0    | 基于内容的报告生成系统               |
+| 时间追踪     | v2.0.0    | 精确时间追踪系统，监控各处理阶段耗时  |
 
 ### 8.3 路线图
 
 未来版本计划:
 
-#### v5.4.0 (计划)
+#### v2.1.0 (计划)
 - 音频质量增强功能，改进转写准确性
 - 视频段落识别，自动分章节
 - 支持自定义报告模板
+- 降低并行翻译的视频长度阈值
 
-#### v6.0.0 (计划)
+#### v3.0.0 (计划)
 - 用户界面升级，添加Web界面支持
 - 多用户支持和访问控制
 - 更细粒度的任务调度和队列管理
 - 云存储集成，支持多种云平台
 - 高级分析功能，包括情感分析和话题提取
 
-#### v7.0.0 (远期规划)
+#### v4.0.0 (远期规划)
 - 企业级功能，包括团队协作和工作流自定义
 - 实时翻译和字幕生成
 - AI模型定制训练支持
