@@ -56,10 +56,10 @@
 
 ## 使用方法
 
-### 命令行选项
+### 使用run.sh脚本（推荐）
 
 ```bash
-python main.py --url "https://www.youtube.com/watch?v=example" --verbose
+./run.sh --url "https://www.youtube.com/watch?v=example" --verbose
 ```
 
 #### 输入选项(必选其一)
@@ -75,28 +75,53 @@ python main.py --url "https://www.youtube.com/watch?v=example" --verbose
 - `--config` - 指定配置文件路径 (默认: config.yaml)
 - `--verbose` - 显示详细日志
 
+#### 系统选项
+
+- `--help` - 显示帮助信息
+- `--examples` - 显示示例命令
+- `--install` - 安装所需依赖
+- `--version` - 显示当前系统版本
+- `--stats` - 显示最近处理的性能统计
+
 > 注意：内容摘要现在是默认生成的，`--summarize` 参数仍然存在但已废弃。
+
+### 直接使用Python（高级用户）
+
+```bash
+python main.py --url "https://www.youtube.com/watch?v=example" --verbose
+```
 
 ### 示例
 
 1. 处理单个YouTube视频:
    ```bash
-   python main.py --url "https://www.youtube.com/watch?v=example"
+   ./run.sh --url "https://www.youtube.com/watch?v=example"
    ```
 
 2. 处理本地视频文件并使用学术报告模板:
    ```bash
-   python main.py --file "path/to/video.mp4" --template academic
+   ./run.sh --file "path/to/video.mp4" --template academic
    ```
 
 3. 批量处理视频队列:
    ```bash
-   python main.py --batch "video_queue.txt" --cleanup
+   ./run.sh --batch "video_queue.txt" --cleanup
    ```
 
 4. 启用详细日志输出:
    ```bash
-   python main.py --url "https://www.youtube.com/watch?v=example" --verbose
+   ./run.sh --url "https://www.youtube.com/watch?v=example" --verbose
+   ```
+
+5. 查看系统帮助和示例:
+   ```bash
+   ./run.sh --help
+   ./run.sh --examples
+   ```
+
+6. 清理临时文件:
+   ```bash
+   ./run.sh --cleanup
    ```
 
 ## 配置文件

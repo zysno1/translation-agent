@@ -58,11 +58,17 @@ except ImportError:
 # 更新导入语句以使用最新的LangChain版本
 try:
     from langchain_community.chat_models.tongyi import ChatTongyi
-    from langchain_community.document_loaders import AlibabaASRLoader
-    from langchain_community.document_loaders import WhisperLoader
 except ImportError:
     ChatTongyi = None
+
+try:
+    from langchain_community.document_loaders import AlibabaASRLoader
+except ImportError:
     AlibabaASRLoader = None
+
+try:
+    from langchain_community.document_loaders import WhisperLoader
+except ImportError:
     WhisperLoader = None
 
 # 更新DashScope导入以使用最新版本
@@ -451,45 +457,52 @@ class Models:
             # 导入需要的库（延迟导入）
             if "qwen" in model_name.lower():
                 # 使用通义千问模型 - 优先使用OpenAI兼容接口
+                logger.info(f"初始化通义千问模型: {model_name}")
+                
+                # 优先使用OpenAI兼容接口（推荐方式）
                 try:
-                    logger.info(f"初始化通义千问模型: {model_name}")
+                    from langchain_openai import ChatOpenAI
                     
-                    # 优先使用OpenAI兼容接口（推荐方式）
-                    try:
-                        from langchain_openai import ChatOpenAI
-                        
+                    api_key = os.environ.get('DASHSCOPE_API_KEY')
+                    if not api_key:
+                        api_key = config.get('api_keys', {}).get('dashscope')
+                    
+                    # 使用DashScope的OpenAI兼容端点
+                    base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                    
+                    logger.info(f"使用DashScope OpenAI兼容接口")
+                    return ChatOpenAI(
+                        model=model_name,
+                        temperature=temperature,
+                        api_key=api_key,
+                        base_url=base_url,
+                        max_tokens=4000
+                    )
+                except ImportError:
+                    # 回退到LangChain的通义千问集成
+                    logger.warning("langchain_openai包不可用，回退到LangChain Tongyi集成")
+                    pass  # 继续执行下面的ChatTongyi初始化
+                except Exception as e:
+                    logger.warning(f"DashScope OpenAI兼容接口初始化失败: {e}，回退到ChatTongyi")
+                    pass  # 继续执行下面的ChatTongyi初始化
+                
+                # 使用ChatTongyi作为回退方案
+                try:
+                    if ChatTongyi is not None:
                         api_key = os.environ.get('DASHSCOPE_API_KEY')
                         if not api_key:
                             api_key = config.get('api_keys', {}).get('dashscope')
                         
-                        # 使用DashScope的OpenAI兼容端点
-                        base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-                        
-                        logger.info(f"使用DashScope OpenAI兼容接口")
-                        return ChatOpenAI(
-                            model=model_name,
+                        logger.info(f"使用ChatTongyi初始化模型: {model_name}")
+                        return ChatTongyi(
+                            model_name=model_name,
                             temperature=temperature,
-                            api_key=api_key,
-                            base_url=base_url,
-                            max_tokens=4000
+                            dashscope_api_key=api_key
                         )
-                    except ImportError:
-                        # 回退到LangChain的通义千问集成
-                        logger.warning("OpenAI兼容接口不可用，使用LangChain Tongyi集成")
-                        if ChatTongyi is not None:
-                            api_key = os.environ.get('DASHSCOPE_API_KEY')
-                            if not api_key:
-                                api_key = config.get('api_keys', {}).get('dashscope')
-                                
-                            return ChatTongyi(
-                                model_name=model_name,
-                                temperature=temperature,
-                                dashscope_api_key=api_key
-                            )
-                        else:
-                            raise ImportError("ChatTongyi不可用")
+                    else:
+                        raise ImportError("ChatTongyi模块导入失败")
                 except Exception as e:
-                    logger.error(f"初始化通义千问模型失败: {e}")
+                    logger.error(f"ChatTongyi初始化失败: {e}")
                     raise ModelAPIError(f"通义千问模型初始化失败: {str(e)}")
             
             elif "doubao" in model_name.lower():
@@ -863,9 +876,15 @@ class Models:
             result = chain.invoke({"text": text, "target_lang": target_lang})
             end_time = time.time()
             
-            logger.info(f"翻译完成，耗时: {end_time - start_time:.2f}秒，输出: {len(result)} 字符")
+            # 处理LangChain返回的AIMessage对象
+            if hasattr(result, 'content'):
+                translated_text = result.content
+            else:
+                translated_text = str(result)
             
-            return {"text": result}
+            logger.info(f"翻译完成，耗时: {end_time - start_time:.2f}秒，输出: {len(translated_text)} 字符")
+            
+            return {"text": translated_text}
                 
         except Exception as e:
             logger.error(f"文本翻译失败: {e}")

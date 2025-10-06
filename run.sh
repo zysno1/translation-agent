@@ -78,11 +78,17 @@ check_dependencies() {
     fi
 }
 
-# 确保环境配置文件存在
+# 确保环境配置文件存在并加载
 check_env_file() {
-    if [[ ! -f ".env" && -f ".env.example" ]]; then
+    if [[ -f ".env" ]]; then
+        echo -e "${BLUE}加载环境变量文件: .env${NC}"
+        source .env
+        echo -e "${GREEN}环境变量已加载${NC}"
+    elif [[ -f ".env.example" ]]; then
         echo -e "${YELLOW}警告: 未找到.env文件，但存在.env.example${NC}"
         echo -e "${YELLOW}请使用.env.example创建并配置.env文件${NC}"
+    else
+        echo -e "${YELLOW}警告: 未找到.env文件${NC}"
     fi
 }
 
@@ -194,7 +200,7 @@ show_help() {
     echo "  --file PATH     处理本地视频文件"
     echo "  --batch PATH    批量处理队列文件"
     echo "  --template TYPE 报告模板 (default, academic, business)"
-    echo "  --summarize     生成内容摘要"
+    echo "  --summarize     生成内容摘要 (已废弃：现在摘要生成是默认行为)"
     echo "  --cleanup       清理所有中间文件"
     echo "  --config PATH   指定配置文件路径"
     echo "  --version       显示当前系统版本"
@@ -212,6 +218,14 @@ run_main() {
     echo -e "${BLUE}启动YouTube视频处理系统...${NC}"
     # 记录开始时间
     start_time=$(date +%s)
+    
+    # 确保环境变量传递给Python进程
+    if [[ -f ".env" ]]; then
+        # 使用 export 导出环境变量，确保子进程可以访问
+        set -a  # 自动导出所有变量
+        source .env
+        set +a  # 关闭自动导出
+    fi
     
     # 运行主程序
     python3 main.py "$@"
@@ -319,4 +333,4 @@ main() {
 }
 
 # 执行主函数
-main "$@" 
+main "$@"

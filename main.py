@@ -31,7 +31,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="YouTube视频处理系统")
     
     # 输入源参数组（互斥）
-    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group = parser.add_mutually_exclusive_group(required=False)
     input_group.add_argument("--url", help="YouTube视频URL")
     input_group.add_argument("--file", type=Path, help="本地视频文件路径")
     input_group.add_argument("--batch", type=Path, help="批量处理队列文件")
@@ -314,6 +314,25 @@ def process_batch(batch_file, args, logger):
     return report_path
 
 
+def cleanup_files(logger):
+    """清理所有中间文件"""
+    logger.info("开始清理中间文件...")
+    
+    try:
+        # 初始化存储管理器
+        storage = StorageManager()
+        
+        # 执行清理操作
+        storage.cleanup(keep_important=False)
+        
+        logger.info("中间文件清理完成")
+        return True
+        
+    except Exception as e:
+        logger.error(f"清理文件失败: {str(e)}")
+        return False
+
+
 def main():
     """主函数"""
     args = parse_arguments()
@@ -329,11 +348,19 @@ def main():
         config = load_config(args.config)
         logger.info(f"配置加载完成: {args.config}")
         
+        # 如果只是清理文件，执行清理后退出
+        if args.cleanup and not (args.url or args.file or args.batch):
+            success = cleanup_files(logger)
+            return 0 if success else 1
+        
         # 处理视频
         if args.batch:
             process_batch(args.batch, args, logger)
-        else:
+        elif args.url or args.file:
             process_single_video(args, logger)
+        else:
+            logger.error("必须提供 --url、--file 或 --batch 参数之一")
+            return 1
             
     except Exception as e:
         logger.error(f"程序执行出错: {str(e)}")
@@ -344,4 +371,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    sys.exit(main())
