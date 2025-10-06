@@ -26,13 +26,61 @@ import librosa
 import soundfile as sf
 
 # LangChain导入
-from langchain_community.llms import OpenAI
-from langchain_community.chat_models import ChatOpenAI
-from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnableSequence
-from langchain_core.documents import Document
-from langchain_community.callbacks.manager import get_openai_callback
-from langchain_community.chat_models.tongyi import ChatTongyi
+try:
+    from langchain_community.llms import OpenAI
+    from langchain_community.chat_models import ChatOpenAI
+    from langchain_core.prompts import PromptTemplate
+    from langchain_core.runnables import RunnableSequence
+    from langchain_core.documents import Document
+    from langchain_community.callbacks.manager import get_openai_callback
+except ImportError:
+    # 降级到旧版本导入
+    try:
+        from langchain.llms import OpenAI
+        from langchain.chat_models import ChatOpenAI
+        from langchain.prompts import PromptTemplate
+        from langchain.schema.runnable import RunnableSequence
+        from langchain.schema import Document
+        from langchain.callbacks.manager import get_openai_callback
+    except ImportError:
+        OpenAI = None
+        ChatOpenAI = None
+        PromptTemplate = None
+        RunnableSequence = None
+        Document = None
+        get_openai_callback = None
+
+# 尝试导入langchain-openai
+try:
+    from langchain_openai import ChatOpenAI as OpenAIChatOpenAI
+except ImportError:
+    OpenAIChatOpenAI = None
+# 更新导入语句以使用最新的LangChain版本
+try:
+    from langchain_community.chat_models.tongyi import ChatTongyi
+    from langchain_community.document_loaders import AlibabaASRLoader
+    from langchain_community.document_loaders import WhisperLoader
+except ImportError:
+    ChatTongyi = None
+    AlibabaASRLoader = None
+    WhisperLoader = None
+
+# 更新DashScope导入以使用最新版本
+try:
+    import dashscope
+    from dashscope import Generation
+    from dashscope.api_entities.dashscope_response import Role
+    from dashscope.audio.asr import Recognition
+    from dashscope.audio.tts import SpeechSynthesizer
+    # 注意：新版本DashScope中Audio模块已被移除或重构
+    Audio = None
+except ImportError:
+    dashscope = None
+    Generation = None
+    Audio = None
+    Role = None
+    Recognition = None
+    SpeechSynthesizer = None
 
 from src.config.config_manager import get_config
 from src.utils.log import get_logger
@@ -40,7 +88,6 @@ from src.utils.oss_utils import OSSClient
 
 # 获取日志器
 logger = get_logger()
-
 
 # 重试装饰器
 def retry(max_attempts=3, delay=1, backoff=2, exceptions=(Exception,)):
@@ -403,71 +450,47 @@ class Models:
             
             # 导入需要的库（延迟导入）
             if "qwen" in model_name.lower():
-                # 使用通义千问模型
+                # 使用通义千问模型 - 优先使用OpenAI兼容接口
                 try:
                     logger.info(f"初始化通义千问模型: {model_name}")
                     
-                    # 尝试使用LangChain的通义千问集成
+                    # 优先使用OpenAI兼容接口（推荐方式）
                     try:
-                        from langchain_community.llms import Tongyi
+                        from langchain_openai import ChatOpenAI
                         
                         api_key = os.environ.get('DASHSCOPE_API_KEY')
                         if not api_key:
-                            api_key = config.get('api_keys', {}).get('qwen')
-                            
-                        logger.info(f"使用LangChain Tongyi集成")
-                        return Tongyi(
-                            model_name=model_name,
-                            temperature=temperature,
-                            tongyi_api_key=api_key
-                        )
-                    except ImportError as e:
-                        logger.warning(f"导入LangChain Tongyi集成失败: {e}，使用自定义封装")
-                        # 使用自定义封装
-                        from src.models.qwen_llm import QwenAdapter
-                        return QwenAdapter(model_name, temperature=temperature)
-                except Exception as e:
-                    logger.error(f"初始化通义千问模型失败: {e}")
-                    raise ModelAPIError(f"通义千问模型初始化失败: {str(e)}")
-            
-            elif "deepseek" in model_name.lower():
-                # 使用DeepSeek模型
-                try:
-                    # 首先尝试使用LangChain的DeepSeek集成
-                    try:
-                        from langchain_community.chat_models import ChatDeepSeek
+                            api_key = config.get('api_keys', {}).get('dashscope')
                         
-                        logger.info(f"初始化DeepSeek模型: {model_name}")
-                        api_key = config.get('api_keys', {}).get('deepseek')
-                        base_url = config.get('providers', {}).get('deepseek', {}).get('api_base', 
-                                                                                      "https://api.deepseek.com/v1")
+                        # 使用DashScope的OpenAI兼容端点
+                        base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
                         
-                        return ChatDeepSeek(
-                            model_name=model_name,
+                        logger.info(f"使用DashScope OpenAI兼容接口")
+                        return ChatOpenAI(
+                            model=model_name,
                             temperature=temperature,
-                            deepseek_api_key=api_key,
-                            deepseek_api_base=base_url,
+                            api_key=api_key,
+                            base_url=base_url,
                             max_tokens=4000
                         )
                     except ImportError:
-                        # 如果找不到ChatDeepSeek，尝试使用OpenAI兼容模式
-                        logger.warning(f"找不到LangChain的DeepSeek集成，尝试使用兼容接口")
-                        from langchain_openai import ChatOpenAI
-                        
-                        api_key = config.get('api_keys', {}).get('deepseek')
-                        base_url = config.get('providers', {}).get('deepseek', {}).get('api_base', 
-                                                                                      "https://api.deepseek.com/v1")
-                        
-                        return ChatOpenAI(
-                            model_name=model_name,
-                            temperature=temperature,
-                            openai_api_key=api_key,
-                            openai_api_base=base_url,
-                            max_tokens=4000
-                        )
+                        # 回退到LangChain的通义千问集成
+                        logger.warning("OpenAI兼容接口不可用，使用LangChain Tongyi集成")
+                        if ChatTongyi is not None:
+                            api_key = os.environ.get('DASHSCOPE_API_KEY')
+                            if not api_key:
+                                api_key = config.get('api_keys', {}).get('dashscope')
+                                
+                            return ChatTongyi(
+                                model_name=model_name,
+                                temperature=temperature,
+                                dashscope_api_key=api_key
+                            )
+                        else:
+                            raise ImportError("ChatTongyi不可用")
                 except Exception as e:
-                    logger.error(f"初始化DeepSeek模型失败: {e}")
-                    raise ModelAPIError(f"DeepSeek模型初始化失败: {str(e)}")
+                    logger.error(f"初始化通义千问模型失败: {e}")
+                    raise ModelAPIError(f"通义千问模型初始化失败: {str(e)}")
             
             elif "doubao" in model_name.lower():
                 # 使用抖报(Doubao)模型
@@ -583,7 +606,10 @@ class Models:
                     loader = AlibabaASRLoader(
                         file_path=optimized_audio,
                         api_key=api_key,
-                        model="paraformer-realtime-v2"
+                        model="paraformer-realtime-v2",
+                        format="wav",
+                        sample_rate=16000,
+                        language_hints=["zh", "en"]
                     )
                     transcript_doc = loader.load()[0]  # 返回Document对象列表
                     
@@ -688,13 +714,22 @@ class Models:
         
         try:
             # Import here to avoid circular imports
+            if dashscope is None:
+                raise ModelAPIError("DashScope SDK未安装或导入失败")
+            
             from dashscope.audio.asr import Transcription
-            from dashscope import api_key as dashscope_api_key
             
             # Get API key from environment or config
-            api_key = os.environ.get("DASHSCOPE_API_KEY") or config.get("dashscope.api_key")
-            if api_key:
-                dashscope_api_key = api_key
+            config = get_config()
+            api_key = os.environ.get("DASHSCOPE_API_KEY")
+            if not api_key:
+                api_key = config.get('api_keys', {}).get('qwen')
+            
+            if not api_key:
+                raise ValueError("未配置DashScope API密钥")
+            
+            # Set API key for DashScope
+            dashscope.api_key = api_key
             
             # Get the correct model name based on input model_name
             # 使用最新的模型，无论SDK中是否有定义
@@ -1046,16 +1081,14 @@ class Models:
                 
             logger.info(f"使用DashScope模型: {dashscope_model}")
             
-            recognition = Recognition(
-                model=dashscope_model,  # 使用正确的DashScope模型名称
-                callback=recognition_callback,   # 第二个参数是callback
-                format='wav',                    # 第三个参数是format
-                sample_rate=16000,               # 第四个参数是sample_rate
-                channel=1                        # 其他参数作为kwargs传递
+            # 使用最新的DashScope API调用方式
+            response = Recognition.call(
+                model=dashscope_model,
+                format='wav',
+                sample_rate=16000,
+                callback=recognition_callback,
+                file_urls=[audio_path]  # 使用file_urls参数而不是直接传递路径
             )
-            
-            # 同步调用方式
-            response = recognition.call(audio_path)
             
             # 检查总体结果
             if response.status_code == 200:
@@ -1083,6 +1116,8 @@ class Models:
             {"start": 5.1, "end": 10.0, "text": "这是第二句话，用于测试。"},
             {"start": 10.1, "end": 15.0, "text": "这是最后一句话，谢谢使用。"}
         ]
+        
+        full_text = " ".join([seg["text"] for seg in segments])
         
         return {
             "text": full_text,
@@ -1180,4 +1215,4 @@ class Models:
             
         except Exception as e:
             logger.error(f"文本补全失败: {e}")
-            raise 
+            raise
